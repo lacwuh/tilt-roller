@@ -651,11 +651,12 @@ const cloudUniforms = {
   uLight: { value: new THREE.Color('#fff6ee') }, uShade: { value: new THREE.Color('#a886c4') },
   uRainLight: { value: new THREE.Color('#8f96b8') }, uRainShade: { value: new THREE.Color('#2e3158') },
   uFogColor: { value: new THREE.Color() }, uFogNear: { value: 160 }, uFogFar: { value: 700 },
+  uFlash: { value: 0 }, uFlashPos: { value: new V3() },   // lightning inside the storm clouds
 };
 const CLOUD_VS = `attribute vec3 aCenter; attribute vec4 aParams;   // params: size, seed, tone, rain
-  varying vec2 vUv; varying vec4 vP; varying float vDepth; varying vec2 vUp;
+  varying vec2 vUv; varying vec4 vP; varying float vDepth; varying vec2 vUp; varying vec3 vCenter;
   void main(){
-    vUv = uv; vP = aParams;
+    vUv = uv; vP = aParams; vCenter = aCenter;
     vec4 mv = modelViewMatrix * vec4(aCenter, 1.0);
     mv.xy += position.xy * aParams.x;
     vDepth = -mv.z;
@@ -663,8 +664,8 @@ const CLOUD_VS = `attribute vec3 aCenter; attribute vec4 aParams;   // params: s
     gl_Position = projectionMatrix * mv;
   }`;
 const CLOUD_FS = `uniform sampler2D uNoise; uniform float uTime, uFogNear, uFogFar;
-  uniform vec3 uLight, uShade, uRainLight, uRainShade, uFogColor;
-  varying vec2 vUv; varying vec4 vP; varying float vDepth; varying vec2 vUp;
+  uniform vec3 uLight, uShade, uRainLight, uRainShade, uFogColor, uFlashPos; uniform float uFlash;
+  varying vec2 vUv; varying vec4 vP; varying float vDepth; varying vec2 vUp; varying vec3 vCenter;
   void main(){
     vec2 p = vUv - 0.5;
     float d = 1.0 - length(p) * 2.0;
@@ -676,6 +677,8 @@ const CLOUD_FS = `uniform sampler2D uNoise; uniform float uTime, uFogNear, uFogF
     if (a < 0.01) discard;
     float lit = clamp(0.5 + dot(p, vUp) * 1.1 + (n - 0.5) * 0.7, 0.0, 1.0);             // lighter on top, darker in the folds
     vec3 c = mix(mix(uShade, uLight, lit), mix(uRainShade, uRainLight, lit), vP.w) * vP.z;
+    float fl = uFlash * vP.w * (1.0 - smoothstep(8.0, 80.0, distance(vCenter, uFlashPos)));   // lit from inside by lightning
+    c += vec3(0.75, 0.85, 1.4) * fl * (0.35 + n * 1.3);
     c = mix(c, uFogColor, smoothstep(uFogNear, uFogFar, vDepth) * 0.85);
     gl_FragColor = vec4(c, a * 0.92);
     #include <tonemapping_fragment>
@@ -879,6 +882,7 @@ function buildWorld(tr) {
     }
     puffCluster(f.fallBase.clone().addScaledVector(UP, H + 0.6), 10, 5);
   }
+  const curtains = [];   // sample indices where a rain curtain hangs across the road
   const sheenMat = new THREE.MeshStandardMaterial({ color: '#0a1838', transparent: true, opacity: 0.5, roughness: 0.03, metalness: 0.95, envMapIntensity: 2.2, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
   for (const f of tr.features) if (f.type === 'wet') {
     // a mirror-like film of water over the road and the foot of the walls
@@ -891,12 +895,27 @@ function buildWorld(tr) {
       for (const [x, h] of xs) pos.push(P.x + B.x * x + U.x * (h + 0.04), P.y + B.y * x + U.y * (h + 0.04), P.z + B.z * x + U.z * (h + 0.04));
       if (n > 0) for (let j = 0; j < 4; j++) { const a = (n - 1) * 5 + j, b = n * 5 + j; idx.push(a, b, a + 1, a + 1, b, b + 1); }
       n++;
-      if ((i - i0) % 70 === 0) puffCluster(new V3(P.x, P.y + 16 + Math.random() * 4, P.z).addScaledVector(B, (Math.random() - 0.5) * 12), 5, 5);
+      if ((i - i0) % 44 === 0) puffCluster(new V3(P.x, P.y + 19 + Math.random() * 4, P.z).addScaledVector(B, (Math.random() - 0.5) * 14), 7, 6);
+      if ((i - i0) % 36 === 0) curtains.push(i);
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setIndex(idx); geo.computeVertexNormals();
     const film = new THREE.Mesh(geo, sheenMat); film.renderOrder = 1; g.add(film);
+  }
+  if (curtains.length) {
+    // rain curtains: tall translucent sheets hanging from the storm clouds across the road
+    const cm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({ uniforms: stormUniforms, vertexShader: CURTAIN_VS, fragmentShader: CURTAIN_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide }), curtains.length);
+    const mm = new THREE.Matrix4(), W = (HW + PIPE.R) * 2 + 12, H = 21, ax = new V3(), az = new V3(), pp = new V3();
+    curtains.forEach((i, k) => {
+      const yaw = (Math.random() - 0.5) * 0.7;
+      ax.copy(tr.B[i]); ax.y = 0; ax.normalize().applyAxisAngle(UP, yaw);
+      az.crossVectors(ax, UP);
+      pp.copy(tr.P[i]).addScaledVector(UP, H / 2 - 1).addScaledVector(ax, (Math.random() - 0.5) * 6);
+      mm.makeBasis(ax, UP, az).scale(new V3(W, H, 1)).setPosition(pp);
+      cm.setMatrixAt(k, mm);
+    });
+    cm.frustumCulled = false; cm.renderOrder = 0.5; g.add(cm);
   }
   // ---- pillars down to the ground
   const groundY = tr.minY - 80;
@@ -1019,6 +1038,7 @@ const sfx = {
   finish: () => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, f, 0.22, 'square', 0.08, i * 0.12)),
   count: hi => tone(hi ? 880 : 440, hi ? 880 : 440, 0.18, 'square', 0.08),
   quake: () => noise(1.2, 70, 0.8),
+  thunder: v => { noise(1.9, 80, 0.9 * v); noise(0.7, 260, 0.5 * v); if (v > 0.7) noise(0.16, 2200, 0.35 * v, 'highpass'); },
   fog: () => tone(220, 160, 1.2, 'sine', 0.12),
 };
 
@@ -1206,7 +1226,7 @@ function groundStep(dt) {
   const sf = surfOrFlat(ball.x, sm), th = sf.th, ct = Math.cos(th), st = Math.sin(th);
   const onWall = Math.abs(th) > 0.05;
   // wet road: half the steering bite and almost no sideways friction, so the ball skates wide
-  const aT = (gB + input.steer * STEER_ACC * (sm.wet ? 0.5 : 1) - ball.v * ball.v * f.kB + weather.quakeLat) * ct + gU * st - ball.vx * (onWall ? 0.5 : sm.wet ? 0.7 : 2.2);
+  const aT = (gB + input.steer * STEER_ACC * (sm.wet ? 0.3 : 1) - ball.v * ball.v * f.kB + weather.quakeLat) * ct + gU * st - ball.vx * (onWall ? 0.5 : sm.wet ? 0.3 : 2.2);
   ball.vx += aT * dt; ball.x += ball.vx * ct * dt;
   // the outside of a banked curve is a full wall up to the lip
   const side = ball.x < 0 ? -1 : 1;
@@ -1421,7 +1441,7 @@ function logic(dt) {
     if (inW && !ball.inWater) { splashBurst(ball.pos.clone(), F4.U, 46, 9); sfx.splash(); if (state.mode === 'play') popup('SPLASH!', 'info'); }
     ball.inWater = inW;
     const onWet = !!smw.wet && !ball.dead;
-    if (onWet && !ball.onWet && state.mode === 'play') popup('WET TURN!', 'info');
+    if (onWet && !ball.onWet && state.mode === 'play') popup('STORM! SLIPPERY!', 'info');
     ball.onWet = onWet;
   }
   // boost entry
@@ -1508,17 +1528,91 @@ function spray(at, fr, speed, n, big) {
     smoke.spawn(at, sv, big ? 0.55 + Math.random() * 0.4 : 0.35, big ? SPL0 : [0.9, 0.95, 1, 0.4], SPL1, big ? 0.2 + Math.random() * 0.3 : 0.5, big ? 0.1 : 1.4, big ? 20 : 2, 0.8);
   }
 }
+// ---- storms over the wet turns: rain curtains, lightning inside the clouds, thunder
+function makeStreakTexture() {
+  const t = canvasTex(256, 256, (x, w, h) => {
+    x.fillStyle = '#000'; x.fillRect(0, 0, w, h);
+    x.lineCap = 'round';
+    for (let k = 0; k < 150; k++) {
+      const px = Math.random() * w, py = Math.random() * h, L = 18 + Math.random() * 70;
+      x.strokeStyle = `rgba(255,255,255,${0.25 + Math.random() * 0.75})`; x.lineWidth = 0.8 + Math.random() * 1.6;
+      for (const o of [0, -h]) { x.beginPath(); x.moveTo(px, py + o); x.lineTo(px, py + o + L); x.stroke(); }   // wraps vertically
+    }
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+}
+const stormUniforms = {
+  uStreak: { value: makeStreakTexture() }, uNoise: cloudUniforms.uNoise, uTime: cloudUniforms.uTime,
+  uFlash: { value: 0 }, uColor: { value: new THREE.Color('#c9d8f5') },
+};
+const CURTAIN_VS = `varying vec2 vUv; varying float vDepth; varying float vSeed;
+  void main(){
+    vUv = uv;
+    vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+    vSeed = instanceMatrix[3][0] * 0.13 + instanceMatrix[3][2] * 0.07;
+    vec4 mv = viewMatrix * wp; vDepth = -mv.z;
+    gl_Position = projectionMatrix * mv;
+  }`;
+const CURTAIN_FS = `uniform sampler2D uStreak, uNoise; uniform float uTime, uFlash; uniform vec3 uColor;
+  varying vec2 vUv; varying float vDepth; varying float vSeed;
+  void main(){
+    float sway = texture2D(uNoise, vec2(vUv.y * 0.15 + vSeed, uTime * 0.05)).r - 0.5;            // the sheet billows sideways
+    vec2 su = vec2(vUv.x * 7.0 + vUv.y * 0.5 + sway * 0.45 + vSeed, vUv.y * 2.2 + uTime * 2.6);  // slanted, falling
+    float streak = texture2D(uStreak, su).r * 0.6 + texture2D(uStreak, su * vec2(1.7, 0.8) + 0.37).r * 0.4;
+    float band = texture2D(uNoise, vec2(vUv.x * 0.6 + vSeed + uTime * 0.03, vUv.y * 0.25 - uTime * 0.22)).r;   // drifting folds of denser rain
+    float a = (0.16 + streak * 1.0) * smoothstep(0.22, 0.68, band);
+    a *= smoothstep(0.0, 0.12, vUv.x) * smoothstep(1.0, 0.88, vUv.x) * smoothstep(0.0, 0.05, vUv.y) * smoothstep(1.0, 0.7, vUv.y);
+    a *= smoothstep(1.5, 9.0, vDepth) * (1.0 - smoothstep(70.0, 150.0, vDepth));
+    if (a < 0.01) discard;
+    gl_FragColor = vec4(uColor * (1.0 + uFlash * 2.5), min(1.0, a * 0.72));
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }`;
+const storm = { next: 1.5, t: 9, pos: new V3() };
+const boltGeo = new THREE.BufferGeometry();
+boltGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(14 * 3), 3));
+const bolt = new THREE.Line(boltGeo, new THREE.LineBasicMaterial({ color: '#e6eeff', transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, fog: false }));
+bolt.frustumCulled = false; bolt.visible = false; scene.add(bolt);
+// two offset copies make the one-pixel line read as a thick bolt
+for (const o of [[0.22, 0.18], [-0.2, 0.24]]) { const b2 = new THREE.Line(boltGeo, bolt.material); b2.position.set(o[0], 0, o[1]); b2.frustumCulled = false; bolt.add(b2); }
+function strike(zone, focusS) {
+  const s = clamp(focusS + 15 + Math.random() * 150, zone.s0, zone.s1), i = clamp(Math.round(s / DS), 0, track.N - 1);
+  storm.pos.copy(track.P[i]).addScaledVector(track.B[i], (Math.random() - 0.5) * 24); storm.pos.y += 19;
+  storm.t = 0;
+  // a jagged bolt from the cloud down past the road
+  const a = boltGeo.attributes.position; let x = storm.pos.x, z = storm.pos.z;
+  for (let k = 0; k < 14; k++) { a.setXYZ(k, x, storm.pos.y - k * 3.2, z); x += (Math.random() - 0.5) * 5; z += (Math.random() - 0.5) * 5; }
+  a.needsUpdate = true;
+  const dist = storm.pos.distanceTo(camera.position);
+  if (state.mode === 'play') setTimeout(() => sfx.thunder(clamp(1.2 - dist / 260, 0.25, 1)), Math.min(1500, dist * 4));
+}
+function updateStorm(dt, focusS) {
+  let zone = null;
+  for (const f of track.features) if (f.type === 'wet' && focusS > f.s0 - 260 && focusS < f.s1 + 40) { zone = f; break; }
+  if (zone) { storm.next -= dt; if (storm.next <= 0) { strike(zone, focusS); storm.next = 1.2 + Math.random() * 3.2; } }
+  storm.t += dt;
+  const t = storm.t;
+  // three quick pulses, like real lightning
+  const fl = Math.min(1.2, Math.exp(-t * 9) + (t > 0.13 ? 0.7 * Math.exp(-(t - 0.13) * 12) : 0) + (t > 0.32 ? 0.5 * Math.exp(-(t - 0.32) * 7) : 0));
+  const near = 1 - smooth((storm.pos.distanceTo(camera.position) - 60) / 280);
+  cloudUniforms.uFlash.value = fl; cloudUniforms.uFlashPos.value.copy(storm.pos);
+  stormUniforms.uFlash.value = fl * near;
+  hemi.intensity = 0.7 + fl * near * 1.8;     // the whole scene flickers
+  bolt.visible = t < 0.2 && (t < 0.07 || t > 0.12);
+}
+
 function updateWaterFx(dt, focus, focusS) {
   updateClouds(dt);
+  updateStorm(dt, focusS);
   for (const w of waterTex) { w.tex.offset.x -= w.vx * dt; w.tex.offset.y += w.vy * dt; }
   const i = clamp(Math.round(focusS / DS), 0, track.N - 1);
-  // rain over wet turns
+  // rain hammering the road in a storm: little splashes on the surface around you
   if (track.smp[i].wet) {
-    const T = track.T[i], B = track.B[i];
-    for (let k = 0; k < 16; k++) {
-      sp2.copy(focus).addScaledVector(T, -6 + Math.random() * 42).addScaledVector(B, (Math.random() - 0.5) * 22).addScaledVector(WORLD_UP, 4 + Math.random() * 9);
-      sv.set(0, -36, 0);
-      smoke.spawn(sp2, sv, 0.32, [0.85, 0.93, 1, 0.8], [0.85, 0.93, 1, 0.45], 0.17, 0.12, 0, 0);
+    const T = track.T[i], B = track.B[i], U = track.U[i];
+    for (let k = 0; k < 7; k++) {
+      sp2.copy(track.P[clamp(i + Math.round(-10 + Math.random() * 90), 0, track.N - 1)]).addScaledVector(B, (Math.random() - 0.5) * 2 * HW).addScaledVector(U, 0.1);
+      sv.copy(U).multiplyScalar(2 + Math.random() * 3);
+      smoke.spawn(sp2, sv, 0.22, [0.9, 0.95, 1, 0.7], [0.9, 0.95, 1, 0], 0.12, 0.3, 18, 0);
     }
   }
   // foam where the waterfall hits the pool
@@ -1564,9 +1658,18 @@ function clearRace() {
   renderProgMarkers();
 }
 
+// the player gets a small tow when dropped by the pack (up to +10%)
+function playerCatchUp() {
+  const ss = vehicles.filter(o => !o.isPlayer && !o.dead).map(o => o.s).sort((a, b) => a - b);
+  const med = ss.length ? ss[ss.length >> 1] : player.s;
+  return 1 + clamp((med - player.s - 20) * 0.002, 0, 0.1);
+}
 function aiControl(v, dt, tv0) {
   const ai = v.ai, lim = HW - v.spec.halfW - 1.3;
-  if (v.stun > 0) { v.stun -= dt; ai.lane = clamp(v.x, -lim, lim); return { steer: 0, jump: 0, target: tv0 * 0.9 }; }  // dazed after a hit
+  ai.kick = Math.min(2, (ai.kick ?? 2) + dt / 2.8);                 // AI kick charges recharge like the player's
+  ai.hopT = (ai.hopT || 0) - dt;
+  if (v.stun > 0) { ai.lane = clamp(v.x, -lim, lim); ai.drifting = false; return { steer: 0, jump: 0, target: tv0 * 0.9 }; }  // dazed after a hit
+  const i = clamp(Math.round(v.s / DS), 0, track.N - 1), sm = track.smp[i];
   ai.laneT -= dt;
   if (ai.laneT <= 0) { ai.lane = (Math.random() * 2 - 1) * lim; ai.laneT = 2 + Math.random() * 4; }
   for (const o of vehicles) {
@@ -1575,16 +1678,50 @@ function aiControl(v, dt, tv0) {
     // pass on the side we are already on (no flip-flopping), with just enough room
     if (ds > 0 && ds < 16 && Math.abs(o.x - ai.lane) < 2.3) { const side = v.x >= o.x ? 1 : -1; ai.lane = clamp(o.x + side * 2.8, -lim, lim); ai.laneT = 1.5; }
   }
-  const { xd } = v.trackVel();
-  ai.steer += (clamp(0.2 * (ai.lane - v.x) - 0.09 * xd, -0.8, 0.8) - ai.steer) * (1 - Math.exp(-8 * dt));
+  const { sd, xd } = v.trackVel();
+  let want = clamp(0.2 * (ai.lane - v.x) - 0.09 * xd, -0.8, 0.8);
+  const ahead = (types, dist) => track.features.some(f => types.includes(f.type) && (f.s0 ?? f.s) > v.s - 5 && (f.s0 ?? f.s) - v.s < dist);
+  const hazard = ahead(['pit', 'gap'], 75);
+
+  // ---- deliberate drift through dry bends: steer hard into the turn and balance the slide
+  const kB = track.kB[i], kAhead = track.kB[Math.min(track.N - 1, i + 40)];
+  const bend = Math.abs(kB) > 0.008 && kB * kAhead > 0 && Math.abs(kAhead) > 0.006;
+  if (bend && !ai.inBend) ai.driftOK = Math.random() < 0.7;        // each driver decides bend by bend
+  ai.inBend = bend;
+  ai.drifting = bend && ai.driftOK && !sm.wet && !sm.noDetach && !hazard && sd > 22 && v.contacts >= 3 && !v.finished;
+  if (ai.drifting) {
+    const ins = Math.sign(kB), out = clamp(-sd * sd * kB * 0.25, -6, 6);
+    const hold = -out / 7 + 0.1 * (clamp(ai.lane, -lim * 0.6, lim * 0.6) - v.x);   // the slide's balance point, nudged toward the lane
+    want = ins * clamp(ins * hold, 0.62, 1);
+  }
+  // ---- in the air next to someone: steer into them
+  if (v.contacts === 0 && v.z > v.z0 + 0.3) {
+    let best = null, bd = 7;
+    for (const o of vehicles) {
+      if (o === v || o.dead || o.contacts) continue;
+      const d = Math.abs(o.x - v.x);
+      if (Math.abs(o.s - v.s) < 2.4 && d < bd) { bd = d; best = o; }
+    }
+    if (best) want = Math.sign(best.x - v.x);
+  }
+  ai.steer += (want - ai.steer) * (1 - Math.exp(-8 * dt));
   const steer = ai.steer;
+
+  // ---- jumps: always over pits; hop-kicks for fun on clear straights, mostly next to a rival
   let jump = 0;
-  for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - v.s; if (d > 0 && d < Math.max(v.vx, 10) * 0.1) jump = 1; }
+  for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - v.s; if (d > 0 && d < Math.max(v.vx, 10) * 0.1) { jump = 1; ai.kick = Math.max(0, ai.kick - 1); ai.hopT = 1.2; } }
+  const flat = Math.abs(kB) < 0.004 && sm.kind === K.NORMAL && sm.solid && !sm.wet && !sm.water && v.contacts >= 3;
+  if (!jump && flat && ai.kick >= 1 && ai.hopT <= 0 && !v.finished && !hazard && !ahead(['loop', 'ford'], 45)) {
+    const rival = vehicles.some(o => o !== v && !o.dead && Math.abs(o.s - v.s) < 3.5 && Math.abs(o.x - v.x) < 4.5);
+    if (Math.random() < dt * (rival ? 1.3 : 0.1)) { jump = 1; ai.kick -= 1; ai.hopT = 1.6; v.vx += KICK.fwd * 0.6; }
+  }
+
+  // ---- speed: strong catch-up around the player so the pack stays together
   let target;
   if (v.finished) target = 10;
-  else if (v.isPlayer) target = tv0;
-  else target = tv0 * ai.skill * clamp(1 + (player.s - v.s) * 0.0012, 0.86, 1.14); // keep the pack together
-  if (track.smp[clamp(Math.round(v.s / DS), 0, track.N - 1)].wet) target *= 0.94;      // drivers lift a little in the wet
+  else if (v.isPlayer) target = tv0 * playerCatchUp();
+  else target = tv0 * ai.skill * clamp(1 + (player.s - v.s) * 0.007, 0.74, 1.38);   // behind the player: faster; ahead: easing off
+  if (sm.wet) target *= 0.88;                                                        // drivers lift in the storm
   return { steer, jump, target };
 }
 
@@ -1594,11 +1731,11 @@ function raceStep(dt) {
     if (v.dead) { v.step(dt, 0, 0, 0); continue; }
     let steer, jump = 0, target;
     if (v.isPlayer && !state.autoplay) {
-      steer = input.steer; target = v.finished ? 10 : tv0;
+      steer = input.steer; target = v.finished ? 10 : tv0 * playerCatchUp();
       if (input.jumpBuf > 0 && v.contacts >= 2 && useKick()) { jump = input.jumpPow; input.jumpBuf = 0; input.jumpPow = 1; v.vx += KICK.fwd; sfx.kick(); }
     } else ({ steer, jump, target } = aiControl(v, dt, tv0));
     v.vy += weather.quakeLat * 0.4 * dt;
-    v.step(dt, steer, jump, target, v.isPlayer && !state.autoplay);
+    v.step(dt, steer, jump, target, (v.isPlayer && !state.autoplay) || !!v.ai.drifting);
   }
   collideVehicles();
 }
@@ -1623,9 +1760,23 @@ function collideVehicles() {
       const rel = tb.xd - ta.xd;
       if (rel * sg < 0) { a.setTrackVel(ta.sd, ta.xd + rel * wa * 1.3 - sg * 2); b.setTrackVel(tb.sd, tb.xd - rel * wb * 1.3 + sg * 2); hard = Math.abs(rel); }
       const yawKick = Math.min(1, hard / 5) * 0.25; a.r += sg * yawKick * wa; b.r -= sg * yawKick * wb;
-      // the player's shove: throw the rival sideways (up the half-pipe wall, maybe over it)
+      // mid-air hit: an airborne vehicle has no grip, so whoever drives into it sends it flying sideways
+      const aA = ta.xd * sg, aB = -tb.xd * sg;                 // each one's speed toward the other
+      const agg = aA >= aB ? a : b, vic = agg === a ? b : a, closingAll = aA + aB;
+      let airHit = false;
+      if (vic.contacts === 0 && closingAll > 2 && race.t - (vic.airHitT ?? -9) > 0.6) {
+        airHit = true; vic.airHitT = race.t;
+        const away = vic === b ? sg : -sg, tvc = vic.trackVel(), tag = agg.trackVel();
+        vic.setTrackVel(tvc.sd * 0.97, away * Math.max(Math.abs(tvc.xd), Math.min(30, 9 + closingAll * 2.2)));
+        vic.zd += 2.5; vic.r += away * -1.5; vic.stun = 1.3; vic.hitBy = agg; vic.hitT = race.t;
+        agg.setTrackVel(tag.sd, tag.xd * 0.4);
+        hard = Math.max(hard, closingAll * 2.5);
+        race.airHits = (race.airHits || 0) + 1;
+        if (agg.isPlayer) popup('AIR STRIKE!', 'good'); else if (vic.isPlayer) { popup('KNOCKED!', 'bad'); flash(0.3, '#ff4040'); }
+      }
+      // the player's shove on the ground: throw the rival sideways (up the half-pipe wall, maybe over it)
       const pl = a.isPlayer ? a : b.isPlayer ? b : null;
-      if (pl) {
+      if (pl && !airHit) {
         const op = pl === a ? b : a, away = pl === a ? sg : -sg;
         const tp = pl.trackVel(), to = op.trackVel();
         const tp0 = pl === a ? ta : tb, to0 = pl === a ? tb : ta;   // speeds before this contact
@@ -1701,7 +1852,7 @@ function raceLogic(dt) {
     }
     v.wasInWater = wNow;
   }
-  if (player.onWet && !race.wasWet && !player.dead) popup('WET TURN!', 'info');
+  if (player.onWet && !race.wasWet && !player.dead) popup('STORM! SLIPPERY!', 'info');
   race.wasWet = player.onWet;
   if (player.dead && !player.fallAnnounced) { popup('CRASHED!', 'bad'); sfx.fall(); player.fallAnnounced = true; }
   if (!player.dead) player.fallAnnounced = false;
@@ -2131,7 +2282,7 @@ startDemo();
 onResize();
 requestAnimationFrame(frame);
 window.__game = {
-  state, ball, get track() { return track; }, weather, input, camera, race, get vehicles() { return vehicles; }, get clouds() { return cloudFx; }, startGame,
+  state, ball, get track() { return track; }, weather, input, camera, race, get vehicles() { return vehicles; }, get clouds() { return cloudFx; }, storm, strike, startGame,
   // headless test hook: advance the simulation without rendering
   sim(seconds, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) {

@@ -64,6 +64,7 @@ export class Vehicle {
   step(dt, steer, jump, target, canDrift = true) {
     const ctx = this.ctx, tr = ctx.track(), sp = this.spec, G = ctx.G, HW = ctx.HW();
     if (this.dead) { this.zd -= G * dt; this.z += this.zd * dt; this.fallT += dt; return; }
+    if (this.stun > 0) this.stun -= dt;
     const F = ctx.frameAt(this.s, this.F);
     const sm = tr.smp[F.i];
     const cps = Math.cos(this.psi), sps = Math.sin(this.psi);
@@ -124,7 +125,7 @@ export class Vehicle {
     // water and wet road: wading drag in a ford; rain-soaked turns (and wet tyres just after a ford) have far less grip
     const wat = contacts ? (sm.water || 0) : 0;
     this.wetT = wat > 0 ? 1.5 : Math.max(0, this.wetT - dt);
-    const slick = sm.wet ? 1 : this.wetT > 0 ? 0.5 : 0;
+    const slick = sm.wet ? 1 : this.wetT > 0 ? 0.4 : 0;     // storm-soaked road is close to ice
     this.inWater = wat; this.onWet = contacts && sm.wet ? 1 : 0;
     const wantDrift = canDrift && contacts >= 1 ? clamp((Math.abs(steer) - (0.45 - 0.15 * slick)) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
     this.driftI += (wantDrift - this.driftI) * (1 - Math.exp(-(wantDrift > this.driftI ? 10 : 3) * dt));
@@ -151,7 +152,7 @@ export class Vehicle {
     }
     Fx = clamp(Fx, -sp.muR * Nr * 1.3, sp.muR * Nr * 1.3);
     const dazed = this.stun > 0 ? 0.2 : 1;   // a rammed vehicle slides like on ice for a moment
-    const muF = sp.muF * dazed * (1 - 0.6 * slick), muR = sp.muR * (1 - 0.75 * dI) * dazed * (1 - 0.7 * slick);
+    const muF = sp.muF * dazed * (1 - 0.8 * slick), muR = sp.muR * (1 - 0.75 * dI) * dazed * (1 - 0.86 * slick);
     const Fyf = clamp(-7 * Nf * af, -muF * Nf, muF * Nf);
     const rearCap = muR * Nr * Math.sqrt(Math.max(0.15, 1 - (Fx / (sp.muR * Nr * 1.3 + 1e-6)) ** 2));
     const Fyr = clamp(-7 * Nr * ar, -rearCap, rearCap);
