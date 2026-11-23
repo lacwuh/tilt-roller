@@ -41,7 +41,7 @@ export class Vehicle {
     Object.assign(this, {
       s, x, psi: 0, vx: v, vy: 0, r: 0, delta: 0, surfTh: 0, surfH: 0,
       z: this.z0, zd: 0, th: 0, thd: 0, ph: 0, phd: 0,
-      ax: 0, ay: 0, driftI: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
+      ax: 0, ay: 0, driftI: 0, stun: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
       finished: false, finishPlace: 0, finishTime: 0, jumpCD: 0,
     });
   }
@@ -117,8 +117,8 @@ export class Vehicle {
     if (jump && contacts >= 2 && !sm.noDetach && this.jumpCD <= 0) { this.zd += sp.jumpV * jump; this.jumpCD = 0.5; }
 
     // ---- drift: steering hard at speed loosens the rear tyres and lets the tail swing out
-    const wantDrift = contacts >= 1 ? clamp((Math.abs(steer) - 0.55) / 0.4, 0, 1) * clamp((this.vx - 14) / 12, 0, 1) : 0;
-    this.driftI += (wantDrift - this.driftI) * (1 - Math.exp(-(wantDrift > this.driftI ? 6 : 3) * dt));
+    const wantDrift = contacts >= 1 ? clamp((Math.abs(steer) - 0.45) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
+    this.driftI += (wantDrift - this.driftI) * (1 - Math.exp(-(wantDrift > this.driftI ? 10 : 3) * dt));
     const dI = this.driftI;
 
     // ---- steering: player/AI input plus a track-following assist
@@ -133,7 +133,8 @@ export class Vehicle {
     this.alphaR = ar;
     let Fx = contacts ? clamp((target - this.vx) * 1.5, -20, 22) : 0;
     Fx = clamp(Fx, -sp.muR * Nr * 1.3, sp.muR * Nr * 1.3);
-    const muF = sp.muF, muR = sp.muR * (1 - 0.6 * dI);
+    const dazed = this.stun > 0 ? 0.2 : 1;   // a rammed vehicle slides like on ice for a moment
+    const muF = sp.muF * dazed, muR = sp.muR * (1 - 0.75 * dI) * dazed;
     const Fyf = clamp(-7 * Nf * af, -muF * Nf, muF * Nf);
     const rearCap = muR * Nr * Math.sqrt(Math.max(0.15, 1 - (Fx / (sp.muR * Nr * 1.3 + 1e-6)) ** 2));
     const Fyr = clamp(-7 * Nr * ar, -rearCap, rearCap);
@@ -148,10 +149,12 @@ export class Vehicle {
     // driver asks for, so the tail can slide out (drift) without spinning the vehicle round.
     // In the air the heading straightens so it lands facing down the road.
     // heading target: a small angle for normal steering, swung out to ~35 degrees in a drift
-    const psiT = contacts ? -steer * (0.28 + 0.35 * dI) : 0;
+    const psiT = contacts ? -steer * (0.28 + 0.72 * dI) : 0;   // up to ~57 degrees sideways
     const rWant = -F.kB * sd - (contacts ? 1.6 : 4) * (this.psi - psiT);
     this.r += (rWant - this.r) * (1 - Math.exp(-(contacts ? 2.2 * (1 - 0.3 * dI) : 5) * dt));
-    const psiMax = 0.75 + 0.2 * dI;
+    // in a drift the body swings out to the drift angle directly (arcade feel, beats tyre aligning torque)
+    if (dI > 0.05) this.psi += (psiT - this.psi) * (1 - Math.exp(-5 * dI * dt));
+    const psiMax = 0.75 + 0.45 * dI;
     if (Math.abs(this.psi) > psiMax) { this.psi = Math.sign(this.psi) * psiMax; this.r *= 0.5; }
     if (this.vx < 8 && contacts) this.vx += 10 * dt;
     if (sm.minV && this.vx < sm.minV) this.vx = sm.minV;
@@ -163,8 +166,8 @@ export class Vehicle {
     if (dI > 0.05) {
       // drifting: the vehicle slides sideways but keeps travelling down the road
       // ...and keeps most of its speed through the slide
-      const k = 1 - Math.exp(-4 * dI * dt);
-      this.setTrackVel(tv.sd + Math.max(0, target * 0.92 - tv.sd) * k * 0.6, tv.xd + (steer * 5 - tv.xd) * k);
+      const k = 1 - Math.exp(-14 * dI * dt);
+      this.setTrackVel(tv.sd + Math.max(0, target * 0.96 - tv.sd) * k, tv.xd + (steer * 6 - tv.xd) * k);
       tv = this.trackVel();
     }
     if (!contacts) {

@@ -17,6 +17,7 @@ const BALL_HW = 4, RACE_HW = 5;
 const DEG = Math.PI / 180;
 const JUMP_V = 17;
 const BOUNCE_E = 0.42, BOUNCE_MIN = 9;
+const KICK = { max: 2, recharge: 2.0, fwd: 10 };   // rechargeable jump kick: charges, seconds per charge, forward burst
 const TIME_SCALE = 1.45; // game time runs faster than real time: snappier rolling, falling and jumping
 const STEER_ACC = 26;
 const K = { NORMAL: 0, BOOST: 1, KICK: 2, LOOP: 3, HELIX: 4, FINISH: 5, START: 6, RING: 7 };
@@ -781,6 +782,10 @@ function noise(dur, freq, vol, type = 'lowpass') {
 }
 const sfx = {
   jump: () => tone(320, 720, 0.18, 'square', 0.08),
+  kick: () => { tone(320, 720, 0.18, 'square', 0.08); noise(0.35, 500, 0.35, 'lowpass'); tone(90, 220, 0.3, 'sawtooth', 0.08); },
+  empty: () => tone(180, 140, 0.08, 'square', 0.05),
+  turbo: () => { tone(300, 1200, 0.45, 'sawtooth', 0.06); noise(0.4, 1800, 0.25, 'bandpass'); },
+  takedown: () => [392, 523, 659].forEach((f, i) => tone(f, f * 1.5, 0.18, 'square', 0.08, i * 0.07)),
   land: v => noise(0.18, 260, Math.min(0.6, v / 30)),
   ring: () => { tone(500, 1300, 0.35, 'sawtooth', 0.07); tone(750, 1600, 0.4, 'triangle', 0.09); },
   burn: () => noise(0.7, 1400, 0.45, 'bandpass'),
@@ -921,6 +926,14 @@ function readInput(dt) {
 // Game state & physics
 // ============================================================================
 const isRace = () => state.gameMode === 'race' && vehicles.length > 0;
+const kick = { charge: 2 };   // fractional: 1.6 means one ready jump and the next 60% recharged
+function useKick() {
+  if (kick.charge >= 1) { kick.charge -= 1; return true; }
+  input.jumpBuf = 0;
+  const now = performance.now();
+  if (state.mode === 'play' && !state.autoplay && now - (kick.emptyT || 0) > 400) { kick.emptyT = now; sfx.empty(); }
+  return false;
+}
 const state = { gameMode: 'ball', autoplay: false, levelTime: 0, mode: 'demo', level: 1, score: 0, lives: 3, mult: 1, finished: false, finishT: 0, prevS: 0, respawnT: 0, countT: 0, lastCount: -1, time: 0, best: 0 };
 try { state.best = +localStorage.getItem('tiltRollerBest') || 0; } catch (e) { /* ignore */ }
 const ball = { s: 2, x: 0, v: 0, vx: 0, grounded: true, pos: new V3(), vel: new V3(), air: 0, dead: false, h: 0, invuln: 0, burnT: 0, spinAxis: new V3(1, 0, 0), spinRate: 0, lastKind: 0, fallS: 0 };
@@ -974,7 +987,7 @@ function groundStep(dt) {
   ball.s += ball.v * dt;
   if (ball.s >= track.len - 1) { ball.s = track.len - 1; ball.v = 0; }
 
-  if (input.jumpBuf > 0 && !sm.noDetach) { input.jumpBuf = 0; detach(JUMP_V * input.jumpPow); input.jumpPow = 1; sfx.jump(); return; }
+  if (input.jumpBuf > 0 && !sm.noDetach && useKick()) { input.jumpBuf = 0; ball.v += KICK.fwd; detach(JUMP_V * input.jumpPow); input.jumpPow = 1; sfx.kick(); return; }
   const Fn = ball.v * ball.v * f.kN - gU;
   const f2 = frameAt(ball.s, F2);
   const sm2 = track.smp[f2.i];
@@ -1034,9 +1047,9 @@ function land(g, sm, sf) {
   const vn = -ball.vel.dot(n);
   const snap = () => { ball.pos.copy(g.P).addScaledVector(g.B, ball.x - st * (BALL_R + 0.02)).addScaledVector(g.U, sf.h + ct * (BALL_R + 0.02)); };
   // a jump pressed just before touching down fires on landing
-  if (input.jumpBuf > 0 && !sm.noDetach) {
-    ball.vel.addScaledVector(n, vn + JUMP_V * input.jumpPow);
-    input.jumpBuf = 0; input.jumpPow = 1; sfx.jump();
+  if (input.jumpBuf > 0 && !sm.noDetach && useKick()) {
+    ball.vel.addScaledVector(n, vn + JUMP_V * input.jumpPow).addScaledVector(g.T, KICK.fwd);
+    input.jumpBuf = 0; input.jumpPow = 1; sfx.kick();
     snap(); ball.air = 0;
     return;
   }
@@ -1246,7 +1259,7 @@ const RIVALS = [
   { name: 'Ghost', spec: 'car', color: '#e8e8f0' },
 ];
 let vehicles = [], player = null;
-const race = { t: 0, order: [], driftAcc: 0, driftT: 0, lastAir: 0, rank: 1 };
+const race = { t: 0, order: [], driftAcc: 0, driftT: 0, driftHold: 0, turboT: 0, lastAir: 0, rank: 1 };
 
 function setupRace() {
   for (const v of vehicles) scene.remove(v.mesh.root, v.mesh.blob);
@@ -1271,6 +1284,7 @@ function clearRace() {
 
 function aiControl(v, dt, tv0) {
   const ai = v.ai, lim = HW - v.spec.halfW - 0.6;
+  if (v.stun > 0) { v.stun -= dt; ai.lane = clamp(v.x, -lim, lim); return { steer: 0, jump: 0, target: tv0 * 0.9 }; }  // dazed after a hit
   ai.laneT -= dt;
   if (ai.laneT <= 0) { ai.lane = (Math.random() * 2 - 1) * lim; ai.laneT = 2 + Math.random() * 4; }
   for (const o of vehicles) {
@@ -1296,7 +1310,7 @@ function raceStep(dt) {
     let steer, jump = 0, target;
     if (v.isPlayer && !state.autoplay) {
       steer = input.steer; target = v.finished ? 10 : tv0;
-      if (input.jumpBuf > 0 && v.contacts >= 2) { jump = input.jumpPow; input.jumpBuf = 0; input.jumpPow = 1; sfx.jump(); }
+      if (input.jumpBuf > 0 && v.contacts >= 2 && useKick()) { jump = input.jumpPow; input.jumpBuf = 0; input.jumpPow = 1; v.vx += KICK.fwd; sfx.kick(); }
     } else ({ steer, jump, target } = aiControl(v, dt, tv0));
     v.vy += weather.quakeLat * 0.4 * dt;
     v.step(dt, steer, jump, target);
@@ -1313,7 +1327,8 @@ function collideVehicles() {
     if (Math.abs(ds) >= lx || Math.abs(dx) >= wx) continue;
     const ox = wx - Math.abs(dx), os = lx - Math.abs(ds);
     const ta = a.trackVel(), tb = b.trackVel();
-    const ma = a.spec.kind === 'monster' ? 1.6 : 1, mb = b.spec.kind === 'monster' ? 1.6 : 1;
+    const mass = v => v.isPlayer ? 3 : v.spec.kind === 'monster' ? 1.6 : 1;
+    const ma = mass(a), mb = mass(b);
     const wa = mb / (ma + mb), wb = ma / (ma + mb);   // the lighter vehicle gets pushed more
     let hard = 0;
     if (ox < os) {
@@ -1323,6 +1338,22 @@ function collideVehicles() {
       const rel = tb.xd - ta.xd;
       if (rel * sg < 0) { a.setTrackVel(ta.sd, ta.xd + rel * wa * 1.3 - sg * 2); b.setTrackVel(tb.sd, tb.xd - rel * wb * 1.3 + sg * 2); hard = Math.abs(rel); }
       a.r += sg * 0.25 * wa; b.r -= sg * 0.25 * wb;
+      // the player's shove: throw the rival sideways (up the half-pipe wall, maybe over it)
+      const pl = a.isPlayer ? a : b.isPlayer ? b : null;
+      if (pl) {
+        const op = pl === a ? b : a, away = pl === a ? sg : -sg;
+        const tp = pl.trackVel(), to = op.trackVel();
+        const tp0 = pl === a ? ta : tb, to0 = pl === a ? tb : ta;   // speeds before this contact
+        const closing = (tp0.xd - to0.xd) * away;             // how hard the player drove into it
+        if (closing > 1.5) {
+          const push = clamp(7 + closing * 1.8, 0, 24);
+          op.setTrackVel(to.sd * 0.96, away * Math.max(Math.abs(to.xd), push));
+          op.r += away * -1.2; op.stun = 1.0; op.hitBy = pl; op.hitT = race.t;
+          pl.setTrackVel(tp.sd, tp.xd * 0.5);
+          hard = Math.max(hard, closing * 2);
+          if (closing > 5) popup('SLAM!', 'good');
+        }
+      }
     } else {
       // nose to tail: the one behind is slowed, the one in front gets a shove
       const [rr, ff] = ds > 0 ? [a, b] : [b, a];
@@ -1332,6 +1363,14 @@ function collideVehicles() {
         const m = (tr2.sd + tf.sd) / 2; hard = tr2.sd - tf.sd;
         rr.setTrackVel(m - 1.5, tr2.xd + (Math.random() - 0.5) * 3);
         ff.setTrackVel(m + 1.5, tf.xd); ff.r += (Math.random() - 0.5) * 0.4;
+        if (rr.isPlayer && hard > 3) {
+          // rear-ended by the player: spin the rival out and keep the player's momentum
+          const sgn = Math.random() < 0.5 ? -1 : 1;
+          ff.r += sgn * (1.5 + hard * 0.15); ff.stun = 1.2; ff.hitBy = rr; ff.hitT = race.t;
+          ff.setTrackVel(tr2.sd * 0.9, tf.xd + sgn * (4 + hard * 0.5));
+          rr.setTrackVel(tr2.sd - hard * 0.25, tr2.xd);
+          if (hard > 6) popup('BUMP!', 'good');
+        }
       }
     }
     if (hard > 4 && (a.isPlayer || b.isPlayer)) { sfx.land(hard * 2); flash(0.12, '#ffffff'); }
@@ -1363,13 +1402,23 @@ function raceLogic(dt) {
         popup(`${ORD(v.finishPlace)} PLACE!`, 'big good'); popup(`+${pts}`, 'good');
       }
     }
-    if (v.dead && v.fallT > 1.3) respawnVehicle(v);
+    if (v.dead && !v.takedownDone && v.hitBy === player && race.t - v.hitT < 3) {
+      v.takedownDone = true;
+      const pts = 500 * state.level; state.score += pts; popup(`TAKEDOWN! +${pts}`, 'big good'); sfx.takedown(); flash(0.25, '#ffd23f');
+    }
+    if (v.dead && v.fallT > 1.3) { respawnVehicle(v); v.takedownDone = false; v.hitBy = null; }
   }
   if (player.dead && !player.fallAnnounced) { popup('CRASHED!', 'bad'); sfx.fall(); player.fallAnnounced = true; }
   if (!player.dead) player.fallAnnounced = false;
   // rank: finished vehicles first (by finishing order), then by distance
   race.rank = 1 + vehicles.filter(o => o !== player && (o.finished ? (!player.finished || o.finishPlace < player.finishPlace) : (!player.finished && o.s > player.s))).length;
   // drift and air scoring for the player
+  if (player.driftI > 0.5 && Math.abs(input.steer) > 0.45 && !player.finished) race.driftHold += dt;
+  else if (race.driftHold > 0) {
+    if (race.driftHold > 0.7 && !player.dead) { const b = Math.min(14, 5 + race.driftHold * 5); player.vx += b; popup('TURBO!', 'info'); sfx.turbo(); race.turboT = 0.8; }
+    race.driftHold = 0;
+  }
+  race.turboT = Math.max(0, (race.turboT || 0) - dt);
   if (player.drift > 0.02 && !player.finished) { race.driftAcc += player.drift * player.vx * dt * 6; race.driftT = 0.4; }
   else if (race.driftT > 0) {
     race.driftT -= dt;
@@ -1409,7 +1458,7 @@ let camSnap = true;
 
 function resetRun() {
   ball.s = 2; ball.x = 0; ball.vx = 0; ball.v = 0; ball.grounded = true; ball.dead = false; ball.air = 0; ball.invuln = 0; ball.burnT = 0;
-  state.finished = false; state.finishT = 0; state.prevS = ball.s; state.respawnT = 0; state.levelTime = 0;
+  state.finished = false; state.finishT = 0; state.prevS = ball.s; state.respawnT = 0; state.levelTime = 0; kick.charge = KICK.max;
   weather.quakeT = -1; weather.quakeEnv = 0; weather.quakeLat = 0; weather.quakeNext = 18 + Math.random() * 12;
   weather.fogT = -1; weather.fogAmt = 0; weather.fogNext = 28 + Math.random() * 20;
   setGroundPos(frameAt(ball.s, F2));
@@ -1644,11 +1693,20 @@ function updateVisuals(dt, gdt = dt) {
     elLives.textContent = '❤'.repeat(Math.max(0, state.lives));
     elProg.style.width = `${clamp(ball.s / track.finishS, 0, 1) * 100}%`;
     elTilt.style.left = `${50 + input.steer * 45}%`;
+    drawKick();
     elSpeed.textContent = `${Math.round(ball.v * TIME_SCALE * 3.6)} km/h`;
   }
 }
 
 const elProgWrap = document.getElementById('prog');
+const kickPips = [...document.querySelectorAll('#kick .pip i')];
+function drawKick() {
+  kickPips.forEach((el, i) => {
+    const f = clamp(kick.charge - i, 0, 1);
+    el.style.height = `${f * 100}%`;
+    el.parentElement.classList.toggle('ready', f >= 1);
+  });
+}
 function renderProgMarkers() {
   elProgWrap.querySelectorAll('.mk').forEach(e => e.remove());
   for (const v of vehicles) {
@@ -1701,6 +1759,7 @@ function updateRaceVisuals(dt, gdt) {
     elLives.textContent = '';
     elProg.style.width = `${clamp(player.s / track.finishS, 0, 1) * 100}%`;
     elTilt.style.left = `${50 + input.steer * 45}%`;
+    drawKick();
     elSpeed.textContent = `${Math.round(Math.max(0, player.vx) * TIME_SCALE * 3.6)} km/h`;
   }
 }
@@ -1747,6 +1806,7 @@ function frame(now) {
   if (state.mode === 'count') updateCountdown(dt);
   const gdt = dt * TIME_SCALE;
   if (state.mode === 'play' || state.mode === 'demo') {
+    kick.charge = Math.min(KICK.max, kick.charge + gdt / KICK.recharge);
     const n = Math.ceil(gdt / (1 / 150)), h = gdt / n;
     for (let k = 0; k < n; k++) (isRace() ? raceStep : physicsStep)(h);
     input.jumpBuf = Math.max(0, input.jumpBuf - dt);
@@ -1768,6 +1828,7 @@ window.__game = {
       readInput(dt);
       if (state.mode === 'count') updateCountdown(dt);
       if (state.mode !== 'play' && state.mode !== 'demo') continue;
+      kick.charge = Math.min(KICK.max, kick.charge + dt / KICK.recharge);
       const n = 3;
       for (let k = 0; k < n; k++) (isRace() ? raceStep : physicsStep)(dt / n);
       input.jumpBuf = Math.max(0, input.jumpBuf - dt);

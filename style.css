@@ -60,3 +60,7 @@ button.alt:active { box-shadow: 0 2px 0 #1d4fa8; }
 #zones { position: fixed; inset: 0; pointer-events: none; }
 #zones .z { position: absolute; bottom: calc(env(safe-area-inset-bottom) + 50px); font-size: 34px; opacity: .22; color: #fff; }
 #zones .l { left: 18px; } #zones .r { right: 18px; }
+#kick { position: absolute; left: 16px; bottom: calc(env(safe-area-inset-bottom) + 12px); display: flex; align-items: center; gap: 6px; font-weight: 900; font-size: 13px; letter-spacing: 1px; text-shadow: 0 2px 0 #0006; }
+#kick .pip { position: relative; width: 16px; height: 26px; border-radius: 5px; background: #0006; border: 2px solid #ffffff55; overflow: hidden; }
+#kick .pip i { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: linear-gradient(180deg, #7ae7ff, #3b8cff); }
+#kick .pip.ready { border-color: #fff; box-shadow: 0 0 8px #7ae7ff; }
