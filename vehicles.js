@@ -17,8 +17,9 @@ const V3 = THREE.Vector3;
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
 export const SPECS = {
-  monster: { kind: 'monster', a: 1.7, b: 1.7, ht: 1.45, Rw: 0.95, ww: 0.8, L0: 0.95, k: 25, cd: 2.0, muF: 1.6, muR: 1.45, hcg: 1.3, Ip: 2.6, Ir: 1.4, Iz: 2.9, jumpV: 13, halfW: 1.9, halfL: 2.6 },
-  car:     { kind: 'car',     a: 1.45, b: 1.45, ht: 1.0, Rw: 0.45, ww: 0.42, L0: 0.35, k: 60, cd: 3.4, muF: 1.75, muR: 1.6, hcg: 0.5, Ip: 1.9, Ir: 0.8, Iz: 2.1, jumpV: 11, halfW: 1.25, halfL: 2.3 },
+  // half the original size; springs stiffened so the static sag stays in proportion
+  monster: { kind: 'monster', a: 0.85, b: 0.85, ht: 0.72, Rw: 0.48, ww: 0.42, L0: 0.48, k: 50, cd: 2.8, muF: 1.6, muR: 1.45, hcg: 0.65, Ip: 0.65, Ir: 0.35, Iz: 0.75, jumpV: 10.5, halfW: 0.95, halfL: 1.3 },
+  car:     { kind: 'car',     a: 0.72, b: 0.72, ht: 0.5, Rw: 0.23, ww: 0.21, L0: 0.18, k: 120, cd: 4.8, muF: 1.75, muR: 1.6, hcg: 0.25, Ip: 0.5, Ir: 0.2, Iz: 0.55, jumpV: 9.5, halfW: 0.63, halfL: 1.15 },
 };
 
 export class Vehicle {
@@ -38,9 +39,9 @@ export class Vehicle {
 
   reset(s, x, v) {
     Object.assign(this, {
-      s, x, psi: 0, vx: v, vy: 0, r: 0, delta: 0,
+      s, x, psi: 0, vx: v, vy: 0, r: 0, delta: 0, surfTh: 0, surfH: 0,
       z: this.z0, zd: 0, th: 0, thd: 0, ph: 0, phd: 0,
-      ax: 0, ay: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
+      ax: 0, ay: 0, driftI: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
       finished: false, finishPlace: 0, finishTime: 0, jumpCD: 0,
     });
   }
@@ -62,21 +63,30 @@ export class Vehicle {
     const F = ctx.frameAt(this.s, this.F);
     const sm = tr.smp[F.i];
     const cps = Math.cos(this.psi), sps = Math.sin(this.psi);
-    const gT = -G * F.T.y, gB = -G * F.B.y, gU = -G * F.U.y;
+    const gT = -G * F.T.y, gB0 = -G * F.B.y, gU0 = -G * F.U.y;
     const sd = this.vx * cps - this.vy * sps;
+    // the vehicle stands on the half-pipe surface: local up Uv is the surface normal at x
+    const sfC = ctx.surfAt(this.x, sm);
+    if (sfC) { this.surfTh = sfC.th; this.surfH = sfC.h; }
+    const thC = this.surfTh || 0, hC = this.surfH || 0, ct = Math.cos(thC), st = Math.sin(thC);
+    const gU = gU0 * ct - gB0 * st, gB = gB0 * ct + gU0 * st;   // gravity along the surface normal / across it
+    const Ux = F.U.x * ct - F.B.x * st, Uy = F.U.y * ct - F.B.y * st, Uz = F.U.z * ct - F.B.z * st;
+    const Pcx = F.P.x + F.B.x * this.x + F.U.x * hC, Pcy = F.P.y + F.B.y * this.x + F.U.y * hC, Pcz = F.P.z + F.B.z * this.x + F.U.z * hC;
 
     // ---- suspension: ground height under each wheel, spring-damper force
     let Fz = 0, Mth = 0, Mph = 0, Nf = 0, Nr = 0, contacts = 0;
     for (const w of this.wheels) {
       const dT = w.lx * cps - w.ly * sps, dB = -w.lx * sps - w.ly * cps;
-      const ws = this.s + dT, wx = this.x + dB;
+      const ws = this.s + dT, wx = this.x + dB * ct;
       const Fw = ctx.frameAt(ws, this.Fw);
       const smw = tr.smp[Fw.i];
       let g = null;
-      if (smw.solid && Math.abs(wx) <= HW + 0.8) {
-        g = (Fw.P.x + Fw.B.x * wx - F.P.x - F.B.x * this.x) * F.U.x
-          + (Fw.P.y + Fw.B.y * wx - F.P.y - F.B.y * this.x) * F.U.y
-          + (Fw.P.z + Fw.B.z * wx - F.P.z - F.B.z * this.x) * F.U.z;
+      const sf = smw.solid ? ctx.surfAt(wx, smw) : null;
+      if (sf) {
+        const hw = sf.h;
+        g = (Fw.P.x + Fw.B.x * wx + Fw.U.x * hw - Pcx) * Ux
+          + (Fw.P.y + Fw.B.y * wx + Fw.U.y * hw - Pcy) * Uy
+          + (Fw.P.z + Fw.B.z * wx + Fw.U.z * hw - Pcz) * Uz;
       }
       const ya = this.z + this.th * w.lx + this.ph * w.ly;
       const yad = this.zd + this.thd * w.lx + this.phd * w.ly;
@@ -95,16 +105,21 @@ export class Vehicle {
     this.contacts = contacts;
 
     // ---- body heave / pitch / roll
-    const zdd = Fz + gU - sd * sd * F.kN;
-    let thdd = (Mth + this.ax * sp.hcg) / sp.Ip;
-    let phdd = (Mph + this.ay * sp.hcg) / sp.Ir;
+    const zdd = Fz + gU - sd * sd * F.kN * ct;
+    let thdd = (Mth + this.ax * sp.hcg * 0.5) / sp.Ip;
+    let phdd = (Mph + this.ay * sp.hcg * 0.35) / sp.Ir;
     if (contacts === 0) { thdd = -this.th * 8 - this.thd * 3; phdd = -this.ph * 8 - this.phd * 3; this.air += dt; }
     this.zd += zdd * dt; this.z += this.zd * dt;
-    this.thd += thdd * dt; this.th = clamp(this.th + this.thd * dt, -0.7, 0.7);
-    this.phd += phdd * dt; this.ph = clamp(this.ph + this.phd * dt, -0.6, 0.6);
+    this.thd += thdd * dt; this.th = clamp(this.th + this.thd * dt, -0.5, 0.5);
+    this.phd += phdd * dt; this.ph = clamp(this.ph + this.phd * dt, -0.35, 0.35);
     if (sm.noDetach && this.z > this.z0 + 0.2) { this.z = this.z0 + 0.2; this.zd = Math.min(this.zd, 0); }
     this.jumpCD -= dt;
     if (jump && contacts >= 2 && !sm.noDetach && this.jumpCD <= 0) { this.zd += sp.jumpV * jump; this.jumpCD = 0.5; }
+
+    // ---- drift: steering hard at speed loosens the rear tyres and lets the tail swing out
+    const wantDrift = contacts >= 1 ? clamp((Math.abs(steer) - 0.55) / 0.4, 0, 1) * clamp((this.vx - 14) / 12, 0, 1) : 0;
+    this.driftI += (wantDrift - this.driftI) * (1 - Math.exp(-(wantDrift > this.driftI ? 6 : 3) * dt));
+    const dI = this.driftI;
 
     // ---- steering: player/AI input plus a track-following assist
     const dmax = 0.55 / (1 + Math.abs(this.vx) / 22);
@@ -118,8 +133,9 @@ export class Vehicle {
     this.alphaR = ar;
     let Fx = contacts ? clamp((target - this.vx) * 1.5, -20, 22) : 0;
     Fx = clamp(Fx, -sp.muR * Nr * 1.3, sp.muR * Nr * 1.3);
-    const Fyf = clamp(-7 * Nf * af, -sp.muF * Nf, sp.muF * Nf);
-    const rearCap = sp.muR * Nr * Math.sqrt(Math.max(0.15, 1 - (Fx / (sp.muR * Nr * 1.3 + 1e-6)) ** 2));
+    const muF = sp.muF, muR = sp.muR * (1 - 0.6 * dI);
+    const Fyf = clamp(-7 * Nf * af, -muF * Nf, muF * Nf);
+    const rearCap = muR * Nr * Math.sqrt(Math.max(0.15, 1 - (Fx / (sp.muR * Nr * 1.3 + 1e-6)) ** 2));
     const Fyr = clamp(-7 * Nr * ar, -rearCap, rearCap);
     const gF = gT * cps - gB * sps, gL = -gT * sps - gB * cps;
     const ax = Fx - Fyf * Math.sin(this.delta) + gF * 0.55 - 0.0015 * this.vx * Math.abs(this.vx);
@@ -131,29 +147,39 @@ export class Vehicle {
     // stability assist (arcade ESC): yaw rate is pulled toward the road's turn rate plus what the
     // driver asks for, so the tail can slide out (drift) without spinning the vehicle round.
     // In the air the heading straightens so it lands facing down the road.
-    const rWant = -F.kB * sd - (contacts ? 1.6 : 4) * this.psi - (contacts ? steer * 0.45 : 0);
-    this.r += (rWant - this.r) * (1 - Math.exp(-(contacts ? 2.2 : 5) * dt));
-    if (Math.abs(this.psi) > 0.9) { this.psi = Math.sign(this.psi) * 0.9; this.r *= 0.5; }
+    // heading target: a small angle for normal steering, swung out to ~35 degrees in a drift
+    const psiT = contacts ? -steer * (0.28 + 0.35 * dI) : 0;
+    const rWant = -F.kB * sd - (contacts ? 1.6 : 4) * (this.psi - psiT);
+    this.r += (rWant - this.r) * (1 - Math.exp(-(contacts ? 2.2 * (1 - 0.3 * dI) : 5) * dt));
+    const psiMax = 0.75 + 0.2 * dI;
+    if (Math.abs(this.psi) > psiMax) { this.psi = Math.sign(this.psi) * psiMax; this.r *= 0.5; }
     if (this.vx < 8 && contacts) this.vx += 10 * dt;
     if (sm.minV && this.vx < sm.minV) this.vx = sm.minV;
     this.vx = clamp(this.vx, -10, 95);
-    this.drift = contacts >= 2 && Math.abs(this.vx) > 12 ? Math.max(0, Math.abs(ar) - 0.1) : 0;
+    this.drift = contacts >= 2 && Math.abs(this.vx) > 12 ? Math.max(0, Math.abs(ar) - 0.08) : 0;
 
     // ---- integrate in track coordinates
     let tv = this.trackVel();
+    if (dI > 0.05) {
+      // drifting: the vehicle slides sideways but keeps travelling down the road
+      // ...and keeps most of its speed through the slide
+      const k = 1 - Math.exp(-4 * dI * dt);
+      this.setTrackVel(tv.sd + Math.max(0, target * 0.92 - tv.sd) * k * 0.6, tv.xd + (steer * 5 - tv.xd) * k);
+      tv = this.trackVel();
+    }
     if (!contacts) {
       // airborne: sideways air drag plus a little air steering, like the ball
       this.setTrackVel(tv.sd, tv.xd * Math.exp(-1.4 * dt) + steer * 10 * dt);
       tv = this.trackVel();
     }
     this.psi += (this.r + F.kB * tv.sd) * dt;
-    this.s += tv.sd * dt; this.x += tv.xd * dt;
+    this.s += tv.sd * dt; this.x += tv.xd * ct * dt;
     if (contacts) this.air = 0;
 
     // ---- walls (raised berm on the outside of curves)
-    const wall = HW - sp.halfW;
-    if ((sm.berm > 0.3 && this.x > wall) || (sm.berm < -0.3 && this.x < -wall)) {
-      const side = Math.sign(sm.berm);
+    const side = Math.sign(sm.berm);
+    const wall = side ? ctx.lipX(sm, side) - sp.halfW : 1e9;
+    if (Math.abs(sm.berm) > 0.3 && this.x * side > wall) {
       this.x = side * wall;
       const t2 = this.trackVel();
       if (t2.xd * side > 0) { this.setTrackVel(t2.sd * 0.97, -t2.xd * 0.4); this.psi *= 0.6; this.r *= 0.4; this.hitWall = Math.abs(t2.xd); }
@@ -161,7 +187,8 @@ export class Vehicle {
 
     // ---- falling: off the edge, or down into a gap
     const smN = tr.smp[ctx.frameAt(this.s, this.F).i];
-    if ((!smN.solid && this.z < -2.5) || (Math.abs(this.x) > HW + 1.2 && this.z < this.z0 - 1.5) || this.z < -8) {
+    const lip = ctx.lipX(smN, this.x < 0 ? -1 : 1);
+    if ((!smN.solid && this.z < -2) || (Math.abs(this.x) > lip + 0.3 && this.z < -0.5) || this.z < -8) {
       this.dead = true; this.fallT = 0;
     }
     if (this.s >= tr.len - 1) { this.s = tr.len - 1; this.vx = 0; }
@@ -174,8 +201,15 @@ export class Vehicle {
     const fwd = new V3().copy(F.T).multiplyScalar(c).addScaledVector(F.B, -sn);
     const left = new V3().copy(F.T).multiplyScalar(-sn).addScaledVector(F.B, -c);
     const right = left.clone().negate(), back = fwd.clone().negate();
-    m.root.position.copy(F.P).addScaledVector(F.B, this.x);
-    m.root.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, F.U, back));
+    // stand on the half-pipe surface: tilt the whole vehicle by the wall angle
+    const th = this.surfTh || 0, ct = Math.cos(th), st = Math.sin(th);
+    const Uv = new V3().copy(F.U).multiplyScalar(ct).addScaledVector(F.B, -st);
+    const Bv = new V3().copy(F.B).multiplyScalar(ct).addScaledVector(F.U, st);
+    fwd.copy(F.T).multiplyScalar(c).addScaledVector(Bv, -sn);
+    left.copy(F.T).multiplyScalar(-sn).addScaledVector(Bv, -c);
+    right.copy(left).negate(); back.copy(fwd).negate();
+    m.root.position.copy(F.P).addScaledVector(F.B, this.x).addScaledVector(F.U, this.surfH || 0);
+    m.root.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, Uv, back));
     m.body.position.y = this.z;
     m.body.rotation.set(this.th, 0, -this.ph);
     const roll = this.vx * dt;
@@ -194,8 +228,8 @@ export class Vehicle {
       mw.strut.scale.y = len;
     });
     // contact shadow under the chassis
-    m.blob.position.copy(F.P).addScaledVector(F.B, this.x).addScaledVector(F.U, 0.04);
-    m.blob.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, fwd, F.U));
+    m.blob.position.copy(m.root.position).addScaledVector(Uv, 0.04);
+    m.blob.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, fwd, Uv));
     const hgt = Math.max(0, this.z - this.z0);
     m.blob.visible = !this.dead && this.ctx.track().smp[F.i].solid;
     m.blob.material.opacity = clamp(0.85 - hgt * 0.05, 0.2, 0.85);
@@ -275,11 +309,12 @@ function buildVehicleMesh(sp, color, tyreTex, blobTex) {
     spin.add(spoke);
     group.add(spin);
     root.add(group);
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(sp.kind === 'monster' ? 0.12 : 0.05, sp.kind === 'monster' ? 0.12 : 0.05, 1, 8), strutMat);
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(sp.kind === 'monster' ? 0.06 : 0.025, sp.kind === 'monster' ? 0.06 : 0.025, 1, 8), strutMat);
     strut.castShadow = true;
     root.add(strut);
     wheels.push({ group, spin, strut });
   }
+  body.scale.setScalar(0.5);
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(sp.halfW * 2.6, sp.halfL * 2.4),
     new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, toneMapped: false }));
   blob.renderOrder = 2;

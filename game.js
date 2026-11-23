@@ -13,7 +13,7 @@ const DS = 0.5;          // track sample spacing (world units)
 const G = 30;            // gravity
 const BALL_R = 0.6;
 let HW = 4;              // half width of the road (wider in race mode)
-const BALL_HW = 4, RACE_HW = 7;
+const BALL_HW = 4, RACE_HW = 5;
 const DEG = Math.PI / 180;
 const JUMP_V = 17;
 const BOUNCE_E = 0.42, BOUNCE_MIN = 9;
@@ -25,6 +25,23 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const lerp = (a, b, t) => a + (b - a) * t;
 const smooth = t => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 const params = new URLSearchParams(location.search);
+
+// half-pipe edges: past the flat road (|x| > HW) the surface curves up along a circle of radius
+// PIPE.R to a lip; the outside of banked curves gets a taller, nearly vertical wall
+const PIPE = { R: 3.5, ang: 76 * DEG, angOuter: 88 * DEG };
+function pipeMaxAng(sm, side) { const b = sm.berm * side; return b > 0.3 ? lerp(PIPE.ang, PIPE.angOuter, clamp(b, 0, 1)) : PIPE.ang; }
+function lipX(sm, side) { return HW + PIPE.R * Math.sin(pipeMaxAng(sm, side)); }
+const SURF = { h: 0, th: 0 };
+// surface height and slope angle at lateral position x (null beyond the lip: nothing to stand on)
+function surfAt(x, sm) {
+  const side = x < 0 ? -1 : 1, u = Math.abs(x) - HW;
+  if (u <= 0) { SURF.h = 0; SURF.th = 0; return SURF; }
+  const amax = pipeMaxAng(sm, side);
+  if (u > PIPE.R * Math.sin(amax) + 1e-6) return null;
+  const phi = Math.asin(Math.min(1, u / PIPE.R));
+  SURF.h = PIPE.R * (1 - Math.cos(phi)); SURF.th = side * phi;
+  return SURF;
+}
 
 function mulberry32(a) {
   return function () {
@@ -97,7 +114,27 @@ function generateTrack(seed, level, race = false) {
   function downhill(A, L) { const p0 = p; run(L, t => ({ p: p0 - A * Math.sin(Math.PI * t) })); p = p0; }
   function bumps() { const n = 2 + Math.floor(rnd() * 3), A = R(8, 13) * DEG, L = R(26, 34); for (let i = 0; i < n; i++) hill(A, L); }
   // roller-coaster waves of varying size
-  function rollers() { const n = 3 + Math.floor(rnd() * 3); for (let i = 0; i < n; i++) hill(R(10, 20) * DEG, R(34, 55)); }
+  function rollers() { const n = 3 + Math.floor(rnd() * 3); for (let i = 0; i < n; i++) hill(R(12, 24) * DEG, R(36, 60)); }
+  // long climb to a crest, over the top and down a steep descent
+  function mountain() {
+    const A = R(14, 22) * DEG, D2 = R(18, 30) * DEG, p0 = p;
+    run(R(20, 30), t => ({ p: p0 + A * smooth(t) }));
+    straight(R(30, 70));
+    run(R(30, 45), t => ({ p: p0 + A - (A + D2) * smooth(t) }));
+    straight(R(25, 55));
+    run(R(25, 35), t => ({ p: p0 - D2 + D2 * smooth(t) }));
+    p = p0;
+  }
+  // dive into a valley and climb out the other side
+  function valley() {
+    const A = R(16, 26) * DEG, p0 = p;
+    run(R(20, 30), t => ({ p: p0 - A * smooth(t) }));
+    straight(R(20, 45));
+    run(R(30, 45), t => ({ p: p0 - A + 2 * A * smooth(t) }));
+    straight(R(20, 45));
+    run(R(20, 30), t => ({ p: p0 + A - A * smooth(t) }));
+    p = p0;
+  }
   // steep drop: the convex lip throws the ball into the air at speed
   function bigDrop() {
     const A = R(22, 34) * DEG, p0 = p;
@@ -118,7 +155,7 @@ function generateTrack(seed, level, race = false) {
     const d = chooseDir();
     let a = R(40, 80) * DEG;
     a = Math.max(15 * DEG, Math.min(a, 65 * DEG - d * h));
-    curve(d * a, R(80, 115), R(8, 14) * DEG * (rnd() < 0.5 ? 1 : -1));
+    curve(d * a, R(80, 115), R(10, 18) * DEG * (rnd() < 0.5 ? 1 : -1));
   }
   // off-camber straight: the road leans sideways with no wall, the player must tilt against it
   function camber() {
@@ -165,7 +202,7 @@ function generateTrack(seed, level, race = false) {
   // pit: a hole in flat road with no ramp, must be jumped (tap or jiggle the phone)
   function pit() {
     cp(); straight(45);
-    const s0 = len() + 30, Lg = R(8, 11) + Math.min(level, 6) * 0.6;
+    const s0 = len() + 30, Lg = R(8, 11) + vt * 0.3 + Math.min(level, 6) * 0.6;
     features.push({ type: 'pitzone', s0: s0 - 28, s1: s0 - 3 });
     straight(30);
     run(Lg, () => ({ solid: false }));
@@ -177,7 +214,7 @@ function generateTrack(seed, level, race = false) {
     cp(); booster(30, Math.max(36, vt + 4), 28); straight(4);
     const Rl = R(13, 16), L = 2 * Math.PI * Rl, p0 = p, side = rnd() < 0.5 ? -1 : 1;
     const Bv = new V3(Math.cos(h), 0, -Math.sin(h));
-    const D = side * (2 * HW + 3.5);
+    const D = side * (2 * (HW + PIPE.R + 0.6) + 1.5);
     const s0 = len(); let prev = 0;
     run(L, t => {
       const sm = smooth(t); const off = Bv.clone().multiplyScalar(D * (sm - prev)); prev = sm;
@@ -207,7 +244,7 @@ function generateTrack(seed, level, race = false) {
 
   straight(race ? 75 : 30, { kind: K.START }); cp();
   const kicker = () => { straight(35); jump(true); };
-  const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, kicker, kicker, kicker, climb, twistHill, twistHill, () => downhill(R(10, 18) * DEG, R(50, 80))];
+  const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, mountain, mountain, valley, valley, kicker, kicker, climb, twistHill, twistHill, () => downhill(R(12, 22) * DEG, R(50, 80))];
   const specials = race ? ['vloop', 'helix', 'jump', 'jump', 'jump', 'pit', 'pit'] : ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'jump', 'pit', 'pit'];
   for (let i = 0; i < Math.min(level - 1, 8); i++) specials.push(pick(race ? ['jump', 'vloop', 'helix', 'jump', 'pit'] : ['ring', 'jump', 'vloop', 'helix', 'ring', 'jump', 'pit', 'pit']));
   for (let i = specials.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [specials[i], specials[j]] = [specials[j], specials[i]]; }
@@ -440,47 +477,82 @@ function roadColor(sm, i) {
     : (sm.kind === K.LOOP || sm.kind === K.HELIX) ? COL.loop : sm.kind === K.FINISH ? COL.finish : COL.road;
   return tmpC.copy(base).multiplyScalar(Math.floor(i * DS / 3) % 2 ? 0.86 : 1);
 }
-function profile(sm) {
-  const bR = sm.berm > 0 ? sm.berm : 0, bL = sm.berm < 0 ? -sm.berm : 0;
-  const lipL = 0.3 + bL * 1.7, lipR = 0.3 + bR * 1.7, wL = HW + 0.8 + bL * 0.6, wR = HW + 0.8 + bR * 0.6;
-  return [[-wL, lipL], [-HW, 0], [0, 0], [HW, 0], [wR, lipR], [wR, -0.8], [-wL, -0.8]];
+// ---- half-pipe cross-section: flat road of half width HW, then circular walls of radius PIPE.R
+// rising to a lip; the outside of banked curves gets a taller, nearly vertical wall.
+const PIPE_SEGS = 6;
+function crossSection(sm) {
+  const R = PIPE.R, top = [];
+  const aL = pipeMaxAng(sm, -1), aR = pipeMaxAng(sm, 1);
+  const xl = HW + R * Math.sin(aL), hl = R * (1 - Math.cos(aL));
+  const xr = HW + R * Math.sin(aR), hr = R * (1 - Math.cos(aR));
+  top.push([-(xl + 0.5), hl]);
+  for (let k = PIPE_SEGS; k >= 0; k--) { const a = aL * k / PIPE_SEGS; top.push([-(HW + R * Math.sin(a)), R * (1 - Math.cos(a))]); }
+  top.push([0, 0]);
+  for (let k = 0; k <= PIPE_SEGS; k++) { const a = aR * k / PIPE_SEGS; top.push([HW + R * Math.sin(a), R * (1 - Math.cos(a))]); }
+  top.push([xr + 0.5, hr]);
+  return top;
+}
+const PIPE_TOP = new THREE.Color('#8fa0ff');
+function topColor(j, n, sm, i) {
+  const mid = (n - 1) / 2;                       // index of the road centre point
+  const k = Math.abs(j - mid);                   // 0 centre, 1 road edge, 2.. pipe, last two lip
+  if (k >= mid - 1) return (Math.floor(i * DS / 1.5) % 2 ? COL.red : COL.white);
+  const c = roadColor(sm, i).clone();
+  if (k <= 1) return c;
+  return c.lerp(PIPE_TOP, 0.12 + 0.5 * (k - 1) / (mid - 2));
 }
 
 function buildTrackMesh(tr) {
   const rows = []; for (let i = 0; i < tr.N; i += 2) rows.push(i);
   if (rows[rows.length - 1] !== tr.N - 1) rows.push(tr.N - 1);
-  const prof = rows.map(i => profile(tr.smp[i]));
   const segSolid = [];
   for (let r = 0; r < rows.length - 1; r++) {
     let ok = true; for (let k = rows[r]; k <= rows[r + 1]; k++) if (!tr.smp[k].solid) { ok = false; break; }
     segSolid.push(ok);
   }
-  const pos = [], col = [];
-  const vtx = (i, xy, c) => {
+  const NT = 2 * PIPE_SEGS + 5, NV = NT + 6, BOT = -0.8;
+  const pos = [], col = [], idx = [];
+  const put = (i, x, y, c) => {
     const P = tr.P[i], B = tr.B[i], U = tr.U[i];
-    pos.push(P.x + B.x * xy[0] + U.x * xy[1], P.y + B.y * xy[0] + U.y * xy[1], P.z + B.z * xy[0] + U.z * xy[1]);
+    pos.push(P.x + B.x * x + U.x * y, P.y + B.y * x + U.y * y, P.z + B.z * x + U.z * y);
     col.push(c.r, c.g, c.b);
   };
-  const cap = (i, pr) => { for (let k = 1; k < 6; k++) { vtx(i, pr[0], COL.side); vtx(i, pr[k], COL.side); vtx(i, pr[k + 1], COL.side); } };
+  const tops = [];
+  for (let r = 0; r < rows.length; r++) {
+    const i = rows[r], sm = tr.smp[i], top = crossSection(sm);
+    tops.push(top);
+    top.forEach((p, j) => put(i, p[0], p[1], topColor(j, NT, sm, i)));
+    const L = top[0], Rr = top[NT - 1];
+    put(i, Rr[0], Rr[1], COL.side); put(i, Rr[0], BOT, COL.side);
+    put(i, Rr[0], BOT, COL.bottom); put(i, L[0], BOT, COL.bottom);
+    put(i, L[0], BOT, COL.side); put(i, L[0], L[1], COL.side);
+  }
+  const quad = (a, b, c, d) => idx.push(a, c, b, b, c, d);
   for (let r = 0; r < rows.length - 1; r++) {
     if (!segSolid[r]) continue;
-    const i0 = rows[r], i1 = rows[r + 1], sm = tr.smp[i0], p0 = prof[r], p1 = prof[r + 1];
-    for (let j = 0; j < 7; j++) {
-      let c;
-      if (j === 1 || j === 2) c = roadColor(sm, i0);
-      else if (j === 0 || j === 3) c = Math.floor(i0 * DS / 1.5) % 2 ? COL.red : COL.white;
-      else if (j === 5) c = COL.bottom; else c = COL.side;
-      const a0 = p0[j], b0 = p0[(j + 1) % 7], a1 = p1[j], b1 = p1[(j + 1) % 7];
-      const cc = c.clone();
-      vtx(i0, a0, cc); vtx(i1, a1, cc); vtx(i0, b0, cc);
-      vtx(i0, b0, cc); vtx(i1, a1, cc); vtx(i1, b1, cc);
+    const o0 = r * NV, o1 = (r + 1) * NV;
+    for (let j = 0; j < NT - 1; j++) quad(o0 + j, o0 + j + 1, o1 + j, o1 + j + 1);
+    for (let j = NT; j < NV; j += 2) quad(o0 + j, o0 + j + 1, o1 + j, o1 + j + 1);
+  }
+  // end caps where the road stops (gaps, start, end): vertical slices under the top profile
+  const cap = (r) => {
+    const i = rows[r], top = tops[r];
+    for (let j = 0; j < NT - 1; j++) {
+      const base = pos.length / 3;
+      put(i, top[j][0], top[j][1], COL.side); put(i, top[j + 1][0], top[j + 1][1], COL.side);
+      put(i, top[j][0], BOT, COL.side); put(i, top[j + 1][0], BOT, COL.side);
+      quad(base, base + 1, base + 2, base + 3);
     }
-    if (r === 0 || !segSolid[r - 1]) cap(i0, p0);
-    if (r === rows.length - 2 || !segSolid[r + 1]) cap(i1, p1);
+  };
+  for (let r = 0; r < rows.length - 1; r++) {
+    if (!segSolid[r]) continue;
+    if (r === 0 || !segSolid[r - 1]) cap(r);
+    if (r === rows.length - 2 || !segSolid[r + 1]) cap(r + 1);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
   geo.computeVertexNormals();
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.25, envMapIntensity: 0.9, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geo, mat);
@@ -543,7 +615,7 @@ function buildWorld(tr) {
     f.mesh = torus; f.glow = glow;
     if (f.fire) {
       const postMat = new THREE.MeshStandardMaterial({ color: '#3a2f55', metalness: 0.7, roughness: 0.3 });
-      const top = f.hgt + f.r + 0.3, span = HW + 1.2;
+      const top = f.hgt + f.r + 0.3, span = HW + PIPE.R + 0.9;
       for (const sd of [-1, 1]) {
         const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, top, 8), postMat);
         post.position.copy(f.P).addScaledVector(f.B, sd * span).addScaledVector(f.U, top / 2);
@@ -573,9 +645,9 @@ function buildWorld(tr) {
   const archQ = basis(F.B, F.U, new V3().crossVectors(F.B, F.U));
   for (const sd of [-1, 1]) {
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 9, 12), archMat);
-    post.position.copy(F.P).addScaledVector(F.B, sd * (HW + 1.6)).addScaledVector(F.U, 4.5); post.quaternion.copy(archQ); post.castShadow = true; g.add(post);
+    post.position.copy(F.P).addScaledVector(F.B, sd * (HW + PIPE.R + 1.2)).addScaledVector(F.U, 4.5); post.quaternion.copy(archQ); post.castShadow = true; g.add(post);
   }
-  const banner = new THREE.Mesh(new THREE.BoxGeometry(HW * 2 + 4, 2, 0.35), new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.4 }));
+  const banner = new THREE.Mesh(new THREE.BoxGeometry((HW + PIPE.R) * 2 + 3.4, 2, 0.35), new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.4 }));
   banner.position.copy(F.P).addScaledVector(F.U, 8.2); banner.quaternion.copy(archQ); banner.castShadow = true; g.add(banner);
   tr.archTop = banner.position.clone();
 
@@ -595,7 +667,7 @@ function buildWorld(tr) {
       const out = F.B.clone().multiplyScalar(sd); const up = new V3(0, 1, 0);
       out.addScaledVector(up, -out.dot(up)).normalize();
       grp.quaternion.copy(basis(out, up, new V3().crossVectors(out, up)));
-      grp.position.copy(F.P).addScaledVector(F.B, sd * (HW + 1.5));
+      grp.position.copy(F.P).addScaledVector(F.B, sd * (HW + PIPE.R + 1.4));
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 5.5, 6), poleMat);
       pole.position.y = 2.75; pole.castShadow = true; grp.add(pole);
       const flag = new THREE.Mesh(flagGeos[fc % 3], new THREE.MeshStandardMaterial({ color: flagCols[fc % flagCols.length], side: THREE.DoubleSide, roughness: 0.6 }));
@@ -768,7 +840,7 @@ function onMotion(e) {
   if (jolt > SHAKE_T && now - tilt.lastShake > 350) {
     tilt.lastShake = now;
     input.jumpBuf = 0.18;
-    input.jumpPow = clamp(1 + (jolt - SHAKE_T) / 12, 1, 1.7);
+    input.jumpPow = clamp(0.8 + (jolt - SHAKE_T) / 30, 0.8, 1.1);
   }
 }
 function requestSensors() {
@@ -847,12 +919,21 @@ const D = new V3(), tv = new V3(), tq = new THREE.Quaternion();
 
 // cruising speed: the level's base speed, growing the longer you stay in the level
 function targetV() { return track.vt + Math.min(16, state.levelTime * 0.2); }
+// The ball rides the half-pipe cross-section: ball.x is its lateral position, ball.vx its
+// speed along the cross-section surface; on the walls gravity pulls it back down.
+function surfOrFlat(x, sm) { return surfAt(x, sm) || { h: 0, th: ball.surfTh || 0 }; }
 function setGroundPos(f) {
-  ball.pos.copy(f.P).addScaledVector(f.B, ball.x).addScaledVector(f.U, BALL_R);
+  const sm = track.smp[f.i], sf = surfOrFlat(ball.x, sm);
+  const st = Math.sin(sf.th), ct = Math.cos(sf.th);
+  ball.pos.copy(f.P).addScaledVector(f.B, ball.x - st * BALL_R).addScaledVector(f.U, sf.h + ct * BALL_R);
+  ball.surfTh = sf.th; ball.h = sf.h + ct * BALL_R;
 }
 function detach(up) {
-  const f = frameAt(ball.s, F1);
-  ball.vel.copy(f.T).multiplyScalar(ball.v).addScaledVector(f.B, ball.vx).addScaledVector(f.U, up);
+  const f = frameAt(ball.s, F1), sm = track.smp[f.i], sf = surfOrFlat(ball.x, sm);
+  const st = Math.sin(sf.th), ct = Math.cos(sf.th);
+  // along the surface: B*ct + U*st ; surface normal: -B*st + U*ct
+  ball.vel.copy(f.T).multiplyScalar(ball.v)
+    .addScaledVector(f.B, ball.vx * ct - up * st).addScaledVector(f.U, ball.vx * st + up * ct);
   setGroundPos(f);
   ball.grounded = false; ball.air = 0;
 }
@@ -868,11 +949,16 @@ function groundStep(dt) {
   if (!state.finished && sm.minV && ball.v < sm.minV) ball.v = sm.minV;
   ball.v = clamp(ball.v, state.finished ? 0 : 6, 95);
 
-  const aX = gB + input.steer * STEER_ACC - ball.v * ball.v * f.kB - ball.vx * 2.2 + weather.quakeLat;
-  ball.vx += aX * dt; ball.x += ball.vx * dt;
-  const wall = HW - BALL_R * 0.6;
-  if (sm.berm > 0.3 && ball.x > wall) { ball.x = wall; if (ball.vx > 0) ball.vx *= -0.6; }
-  if (sm.berm < -0.3 && ball.x < -wall) { ball.x = -wall; if (ball.vx < 0) ball.vx *= -0.6; }
+  const sf = surfOrFlat(ball.x, sm), th = sf.th, ct = Math.cos(th), st = Math.sin(th);
+  const onWall = Math.abs(th) > 0.05;
+  const aT = (gB + input.steer * STEER_ACC - ball.v * ball.v * f.kB + weather.quakeLat) * ct + gU * st - ball.vx * (onWall ? 0.5 : 2.2);
+  ball.vx += aT * dt; ball.x += ball.vx * ct * dt;
+  // the outside of a banked curve is a full wall up to the lip
+  const side = ball.x < 0 ? -1 : 1;
+  if (sm.berm * side > 0.3) {
+    const wall = lipX(sm, side) - BALL_R;
+    if (Math.abs(ball.x) > wall) { ball.x = side * wall; if (ball.vx * side > 0) ball.vx *= -0.5; }
+  }
 
   ball.s += ball.v * dt;
   if (ball.s >= track.len - 1) { ball.s = track.len - 1; ball.v = 0; }
@@ -881,8 +967,8 @@ function groundStep(dt) {
   const Fn = ball.v * ball.v * f.kN - gU;
   const f2 = frameAt(ball.s, F2);
   const sm2 = track.smp[f2.i];
-  // banked turns hold the ball like a coaster car; elsewhere a fast crest throws it into the air
-  if (!sm2.solid || Math.abs(ball.x) > HW + 0.15 || (!sm.noDetach && Math.abs(sm.berm) < 0.3 && Fn < -2)) { detach(0); return; }
+  // flying out over the lip of the half-pipe, off the end of the road, or off a fast crest
+  if (!sm2.solid || !surfAt(ball.x, sm2) || (!sm.noDetach && Math.abs(sm.berm) < 0.3 && Fn < -2)) { detach(0); return; }
   setGroundPos(f2);
 }
 
@@ -907,38 +993,48 @@ function airStep(dt) {
   const hh = D.dot(g.U), xx = D.dot(g.B);
   ball.h = hh; ball.x = xx;
   const sm = track.smp[g.i];
-  // the raised berm on the outside of a curve is a wall for an airborne ball too
-  if (sm.solid && Math.abs(sm.berm) > 0.3 && hh < BALL_R + 1.7 * Math.abs(sm.berm) + 1.5 && hh > -1) {
-    const side = Math.sign(sm.berm), wall = HW - BALL_R * 0.6;
-    if (xx * side > wall) {
-      ball.pos.addScaledVector(g.B, -side * (xx * side - wall));
+  // the tall outer wall of a banked curve also stops an airborne ball
+  const side = xx < 0 ? -1 : 1;
+  if (sm.solid && sm.berm * side > 0.3) {
+    const wall = lipX(sm, side) - BALL_R;
+    if (Math.abs(xx) > wall && hh < PIPE.R + 1.5 && hh > -1) {
+      ball.pos.addScaledVector(g.B, -side * (Math.abs(xx) - wall));
       const vb = ball.vel.dot(g.B);
-      if (vb * side > 0) ball.vel.addScaledVector(g.B, -vb * 1.6);
+      if (vb * side > 0) ball.vel.addScaledVector(g.B, -vb * 1.5);
       ball.x = side * wall;
     }
   }
-  if (sm.solid && Math.abs(ball.x) < HW + 0.2 && hh <= BALL_R && hh > -1.4 && ball.vel.dot(g.U) <= 0.5) { land(g, sm); return; }
+  const sf = sm.solid ? surfAt(ball.x, sm) : null;
+  if (sf) {
+    const st = Math.sin(sf.th), ct = Math.cos(sf.th);
+    // height above the surface measured along the surface normal
+    const dn = (hh - sf.h) * ct;
+    const nx = -st, nu = ct;
+    const vn = ball.vel.dot(g.B) * nx + ball.vel.dot(g.U) * nu;
+    if (dn <= BALL_R && dn > -1.4 && vn <= 0.5) { land(g, sm, sf); return; }
+  }
   if ((ball.air > 0.5 && hh < -22) || D.length() > 90) fallOff();
 }
 
-function land(g, sm) {
-  const vn = -ball.vel.dot(g.U);
+function land(g, sm, sf) {
+  const st = Math.sin(sf.th), ct = Math.cos(sf.th);
+  const n = new V3().copy(g.B).multiplyScalar(-st).addScaledVector(g.U, ct);
+  const tl = new V3().copy(g.B).multiplyScalar(ct).addScaledVector(g.U, st);
+  const vn = -ball.vel.dot(n);
+  const snap = () => { ball.pos.copy(g.P).addScaledVector(g.B, ball.x - st * (BALL_R + 0.02)).addScaledVector(g.U, sf.h + ct * (BALL_R + 0.02)); };
   // a jump pressed just before touching down fires on landing
   if (input.jumpBuf > 0 && !sm.noDetach) {
-    ball.vel.addScaledVector(g.U, vn + JUMP_V * input.jumpPow);
+    ball.vel.addScaledVector(n, vn + JUMP_V * input.jumpPow);
     input.jumpBuf = 0; input.jumpPow = 1; sfx.jump();
-    ball.pos.copy(g.P).addScaledVector(g.B, clamp(ball.x, -HW, HW)).addScaledVector(g.U, BALL_R + 0.02);
-    ball.air = 0;
+    snap(); ball.air = 0;
     return;
   }
   const gapAhead = track.features.some(f => (f.type === 'pit' || f.type === 'gap') && f.s0 > ball.s && f.s0 - ball.s < 45)
     || track.rings.some(f => f.fire && f.s > ball.s && f.s - ball.s < 45);
   if (vn > BOUNCE_MIN && !sm.noDetach && sm.kind !== K.KICK && sm.kind !== K.BOOST && !gapAhead) {
     // bounce: reflect the normal velocity with restitution and stay airborne
-    ball.vel.addScaledVector(g.U, vn * (1 + BOUNCE_E));
-    const lim = Math.abs(sm.berm) > 0.3 ? HW - BALL_R * 0.6 : HW;
-    ball.x = clamp(ball.x, -lim, lim);
-    ball.pos.copy(g.P).addScaledVector(g.B, ball.x).addScaledVector(g.U, BALL_R + 0.02);
+    ball.vel.addScaledVector(n, vn * (1 + BOUNCE_E));
+    snap();
     sfx.land(vn);
     for (let k = 0; k < 10; k++) fx.spawn(ball.pos, tv.set((Math.random() - 0.5) * 8, Math.random() * 4, (Math.random() - 0.5) * 8), 0.45, [1, 0.9, 0.7, 0.5], [0.6, 0.4, 0.8, 0], 0.7, 1.4, 6, 2);
     if (ball.air > 0.8 && state.mode === 'play' && !state.finished) {
@@ -948,9 +1044,7 @@ function land(g, sm) {
     ball.air = 0;
     return;
   }
-  ball.v = Math.max(4, ball.vel.dot(g.T)); ball.vx = ball.vel.dot(g.B) * 0.6;
-  const lim = (sm.berm > 0.3 || sm.berm < -0.3) ? HW - BALL_R * 0.6 : HW;
-  ball.x = clamp(ball.x, -lim, lim);
+  ball.v = Math.max(4, ball.vel.dot(g.T)); ball.vx = ball.vel.dot(tl) * 0.7;
   ball.grounded = true;
   if (vn > 9) {
     sfx.land(vn);
@@ -1009,7 +1103,7 @@ function autopilot() {
 
 // ---- events
 function ringCheck(f) {
-  const hc = ball.grounded ? BALL_R : ball.h;
+  const hc = ball.h;
   const dist = Math.hypot(ball.x - f.xo, hc - f.hgt);
   const scoring = state.mode === 'play';
   if (dist < f.r - BALL_R * 0.3) {
@@ -1131,7 +1225,7 @@ function weatherLogic(dt, focus, onQuake) {
 // ============================================================================
 const smoke = new Particles(1600, false, true);
 scene.add(smoke.points);
-const vctx = { mkF, G, frameAt: (s2, o) => frameAt(s2, o), track: () => track, HW: () => HW, tyreTex: makeTyreTexture(), blobTex };
+const vctx = { mkF, G, frameAt: (s2, o) => frameAt(s2, o), track: () => track, HW: () => HW, tyreTex: makeTyreTexture(), blobTex, surfAt, lipX };
 const RIVALS = [
   { name: 'YOU', spec: 'monster', color: '#ff3b5c', isPlayer: true },
   { name: 'Crusher', spec: 'monster', color: '#2fd6b0' },
@@ -1145,13 +1239,13 @@ const race = { t: 0, order: [], driftAcc: 0, driftT: 0, lastAir: 0, rank: 1 };
 
 function setupRace() {
   for (const v of vehicles) scene.remove(v.mesh.root, v.mesh.blob);
-  vehicles = RIVALS.map(r => new Vehicle(vctx, SPECS[r.spec], { ...r, ai: { lane: 0, laneT: 0, skill: 0.95 + Math.random() * 0.09 } }));
+  vehicles = RIVALS.map(r => new Vehicle(vctx, SPECS[r.spec], { ...r, ai: { lane: 0, laneT: 0, skill: 0.95 + Math.random() * 0.09 + (r.spec === 'car' ? 0.05 : 0) } }));
   player = vehicles[0];
   const slots = [0, 1, 2, 3, 5]; // the player starts in the middle of the grid (slot 4)
   vehicles.forEach((v, i) => {
     const slot = v.isPlayer ? 4 : slots[i - 1];
     const row = Math.floor(slot / 2), col = slot % 2;
-    v.reset(62 - row * 10, col ? 3.4 : -3.4, 0);
+    v.reset(62 - row * 6, col ? 2.2 : -2.2, 0);
     v.ai.lane = v.x;
     scene.add(v.mesh.root, v.mesh.blob);
   });
@@ -1176,7 +1270,7 @@ function aiControl(v, dt, tv0) {
   const { xd } = v.trackVel();
   const steer = clamp(0.22 * (ai.lane - v.x) - 0.08 * xd, -1, 1);
   let jump = 0;
-  for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - v.s; if (d > 0 && d < Math.max(v.vx, 10) * 0.2) jump = 1; }
+  for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - v.s; if (d > 0 && d < Math.max(v.vx, 10) * 0.1) jump = 1; }
   let target;
   if (v.finished) target = 10;
   else if (v.isPlayer) target = tv0;
@@ -1202,7 +1296,7 @@ function raceStep(dt) {
 function collideVehicles() {
   for (let i = 0; i < vehicles.length; i++) for (let j = i + 1; j < vehicles.length; j++) {
     const a = vehicles[i], b = vehicles[j];
-    if (a.dead || b.dead || Math.abs(a.z - b.z) > 2.5) continue;
+    if (a.dead || b.dead || Math.abs(a.z - b.z) > 1.4) continue;
     const ds = b.s - a.s, dx = b.x - a.x;
     const lx = a.spec.halfL + b.spec.halfL, wx = a.spec.halfW + b.spec.halfW;
     if (Math.abs(ds) >= lx || Math.abs(dx) >= wx) continue;
@@ -1313,7 +1407,7 @@ function resetRun() {
 function newSeed() { return params.has('seed') ? (+params.get('seed') + state.level) >>> 0 : ((Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0); }
 
 function startDemo() {
-  state.mode = 'demo'; state.gameMode = 'ball'; HW = BALL_HW; clearRace(); document.body.classList.remove('race');
+  state.mode = 'demo'; state.gameMode = 'ball'; HW = BALL_HW; PIPE.R = 3.5; clearRace(); document.body.classList.remove('race');
   setTrack(generateTrack(newSeed(), 3));
   resetRun(); ball.v = track.vt;
 }
@@ -1326,7 +1420,7 @@ function startGame(mode = 'ball') {
 }
 function beginLevel() {
   const raceMode = state.gameMode === 'race';
-  HW = raceMode ? RACE_HW : BALL_HW;
+  HW = raceMode ? RACE_HW : BALL_HW; PIPE.R = raceMode ? 4 : 3.5;
   setTrack(generateTrack(newSeed(), state.level, raceMode));
   resetRun();
   if (raceMode) setupRace(); else clearRace();
@@ -1453,10 +1547,11 @@ function updateVisuals(dt, gdt = dt) {
   ballMesh.position.copy(ball.pos);
   {
     const f = frameAt(ball.s, F4), sm = track.smp[f.i];
-    const hgt = ball.grounded ? 0 : Math.max(0, ball.h - BALL_R);
-    blob.visible = !ball.dead && sm.solid && hgt < 25 && Math.abs(ball.x) < HW + 0.3;
+    const hgt = ball.grounded ? 0 : Math.max(0, ball.h - BALL_R - (surfAt(ball.x, sm)?.h || 0));
+    const sfb = sm.solid ? surfAt(ball.x, sm) : null;
+    blob.visible = !ball.dead && !!sfb && hgt < 25;
     if (blob.visible) {
-      blob.position.copy(f.P).addScaledVector(f.B, ball.x).addScaledVector(f.U, 0.03);
+      blob.position.copy(f.P).addScaledVector(f.B, ball.x).addScaledVector(f.U, sfb.h + 0.03);
       blob.quaternion.copy(basis(f.B, f.T, f.U));
       blob.scale.setScalar(1 + hgt * 0.09);
       blob.material.opacity = clamp(1 - hgt / 22, 0.15, 1);
@@ -1589,7 +1684,7 @@ function updateRaceVisuals(dt, gdt) {
   }
   if (state.mode === 'play' || state.mode === 'count') {
     elScore.textContent = player.finished ? ORD(player.place) : ORD(race.rank);
-    elMult.textContent = `of ${vehicles.length} · ${Math.floor(state.score).toLocaleString()} pts`;
+    elMult.textContent = race.driftAcc > 5 ? `DRIFT ${Math.round(race.driftAcc)}` : `of ${vehicles.length} · ${Math.floor(state.score).toLocaleString()} pts`;
     elLevel.textContent = `RACE ${state.level}`;
     elLives.textContent = '';
     elProg.style.width = `${clamp(player.s / track.finishS, 0, 1) * 100}%`;
@@ -1599,11 +1694,11 @@ function updateRaceVisuals(dt, gdt) {
 }
 function updateRaceCamera(dt) {
   const v = player;
-  const f = frameAt(Math.max(0, v.s - 13), F3);
-  const desired = tv.copy(f.P).addScaledVector(f.U, 6.2).addScaledVector(f.B, clamp(v.x, -HW, HW) * 0.75);
+  const f = frameAt(Math.max(0, v.s - 8), F3);
+  const desired = tv.copy(f.P).addScaledVector(f.U, 3.6).addScaledVector(f.B, clamp(v.x, -HW - 2, HW + 2) * 0.75);
   const bf = frameAt(v.s, F4);
   const vp = v.mesh.root.position;
-  const look = new V3().copy(vp).addScaledVector(bf.T, 9).addScaledVector(bf.U, 2.2);
+  const look = new V3().copy(vp).addScaledVector(bf.T, 6).addScaledVector(bf.U, 1.2);
   if (camSnap) { camPos.copy(desired); camUp.copy(f.U); camLook.copy(look); camSnap = false; }
   if (!v.dead) camPos.lerp(desired, 1 - Math.exp(-dt * 12));
   camUp.lerp(f.U, 1 - Math.exp(-dt * 5)).normalize();

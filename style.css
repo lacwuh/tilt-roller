@@ -12,7 +12,7 @@ html, body {
 #tr { position: absolute; right: 16px; top: calc(env(safe-area-inset-top) + 10px); text-align: right; }
 #level { font-weight: 800; font-size: 16px; opacity: .9; text-shadow: 0 2px 0 #0006; }
 #lives { font-size: 22px; letter-spacing: 3px; color: #ff4d6d; text-shadow: 0 2px 0 #0006; }
-#prog { position: absolute; left: 50%; transform: translateX(-50%); top: calc(env(safe-area-inset-top) + 70px);
+#prog { position: absolute; left: 50%; transform: translateX(-50%); top: calc(env(safe-area-inset-top) + 104px);
   width: min(56vw, 320px); height: 8px; background: #0005; border-radius: 4px; }
 #progFill { height: 100%; width: 0; background: linear-gradient(90deg, #3bceac, #ffd23f); border-radius: 4px; }
 #progFlag { position: absolute; right: -12px; top: -13px; font-size: 20px; }
