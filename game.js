@@ -127,6 +127,32 @@ function generateTrack(seed, level, race = false) {
     p = p0;
   }
   // dive into a valley and climb out the other side
+  // long downhill run: gravity builds speed all the way down
+  function descent() {
+    const A = R(11, 17) * DEG, p0 = p;
+    run(30, t => ({ p: p0 - A * smooth(t) }));
+    straight(R(70, 130));
+    if (rnd() < 0.6) turn();
+    straight(R(70, 130));
+    run(45, t => ({ p: p0 - A + A * smooth(t) }));
+    p = p0;
+  }
+  // long sweeping spiral, one or two full turns, climbing or descending: made for holding a drift
+  function sweeper() {
+    cp();
+    const Rs = R(58, 76), turns = rnd() < 0.25 ? 2 : 1, d = h > 15 * DEG ? -1 : h < -15 * DEG ? 1 : rnd() < 0.5 ? -1 : 1;
+    const rise = (rnd() < 0.5 ? -1 : 1) * 16 * turns;
+    const L = 2 * Math.PI * Rs * turns, h0 = h, b0 = d * 14 * DEG;
+    const s0 = len(); let prev = 0;
+    run(L, t => {
+      const sm = smooth(t); const off = new V3(0, rise * (sm - prev), 0); prev = sm;
+      const e = smooth(Math.min(1, t / 0.05, (1 - t) / 0.05));
+      return { h: h0 + d * 2 * Math.PI * turns * t, off, bank: b0 * e, berm: d, kind: K.HELIX };
+    });
+    h = h0;
+    features.push({ type: 'loop', s0, s1: len(), name: 'SWEEPER!' });
+    straight(40); cp();
+  }
   function valley() {
     const A = R(16, 26) * DEG, p0 = p;
     run(R(20, 30), t => ({ p: p0 - A * smooth(t) }));
@@ -245,11 +271,11 @@ function generateTrack(seed, level, race = false) {
 
   straight(race ? 75 : 30, { kind: K.START }); cp();
   const kicker = () => { straight(35); jump(true); };
-  const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, mountain, mountain, valley, valley, kicker, kicker, climb, twistHill, twistHill, () => downhill(R(12, 22) * DEG, R(50, 80))];
-  const specials = race ? ['vloop', 'helix', 'jump', 'jump', 'jump', 'pit', 'pit'] : ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'jump', 'pit', 'pit'];
+  const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, mountain, mountain, valley, valley, kicker, kicker, climb, twistHill, twistHill, descent, descent, () => downhill(R(12, 22) * DEG, R(50, 80))];
+  const specials = race ? ['vloop', 'helix', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper'] : ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper'];
   for (let i = 0; i < Math.min(level - 1, 8); i++) specials.push(pick(race ? ['jump', 'vloop', 'helix', 'jump', 'pit'] : ['ring', 'jump', 'vloop', 'helix', 'ring', 'jump', 'pit', 'pit']));
   for (let i = specials.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [specials[i], specials[j]] = [specials[j], specials[i]]; }
-  const fns = { vloop, helix, ring: ringFire, jump: () => jump(false), pit };
+  const fns = { vloop, helix, ring: ringFire, jump: () => jump(false), pit, sweeper };
   for (const sp of specials) {
     const nc = 2 + (rnd() < 0.5 ? 1 : 0);
     for (let c = 0; c < nc; c++) { cp(); pick(conns)(); }
@@ -716,7 +742,7 @@ function buildWorld(tr) {
     const np = 3 + Math.floor(rnd() * 4);
     for (let k = 0; k < np; k++) puffs.push([cen.x + (rnd() - 0.5) * 22, cen.y + (rnd() - 0.5) * 5, cen.z + (rnd() - 0.5) * 22, 5 + rnd() * 8]);
   }
-  const cloud = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshStandardMaterial({ color: '#fff4f0', roughness: 1, flatShading: true, emissive: '#5a3a6a', emissiveIntensity: 0.25 }), Math.max(1, puffs.length));
+  const cloud = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 3), new THREE.MeshStandardMaterial({ color: '#fff4f0', roughness: 1, emissive: '#5a3a6a', emissiveIntensity: 0.25 }), Math.max(1, puffs.length));
   puffs.forEach((pf, k) => { m4.compose(new V3(pf[0], pf[1], pf[2]), one, new V3(pf[3], pf[3] * 0.6, pf[3])); cloud.setMatrixAt(k, m4); });
   cloud.count = puffs.length; g.add(cloud);
 
@@ -968,7 +994,12 @@ function groundStep(dt) {
   const gT = -G * f.T.y, gB = -G * f.B.y, gU = -G * f.U.y;
   let aS;
   if (state.finished) aS = gT * 0.3 - 16 * Math.sign(ball.v);
-  else { const tv0 = targetV(); const target = sm.boost ? Math.max(sm.boost, tv0 + 4) : tv0; aS = gT * 0.5 + (target - ball.v) * (sm.boost ? 3 : 0.9); }
+  else {
+    const tv0 = targetV(), target = sm.boost ? Math.max(sm.boost, tv0 + 4) : tv0, down = gT > 0, over = ball.v > target;
+    // downhill gravity builds speed; above cruise speed the ball only coasts down slowly
+    const pull = over ? (down ? 0.04 : 0.3) : (sm.boost ? 3 : 0.9);
+    aS = gT * (down ? 0.95 : 0.5) + (target - ball.v) * pull - (over ? 0.003 * (ball.v * ball.v - target * target) : 0);
+  }
   ball.v += aS * dt;
   if (!state.finished && sm.minV && ball.v < sm.minV) ball.v = sm.minV;
   ball.v = clamp(ball.v, state.finished ? 0 : 6, 95);
@@ -1119,7 +1150,7 @@ function autopilot() {
   for (const r of track.rings) {
     const d = r.s - ball.s;
     if (d > 0 && d < 70) tx = r.xo;
-    if (r.fire && d > 0 && d < ball.v * (JUMP_V / G) * 0.95 && ball.grounded) { input.jumpBuf = 0.1; break; }
+    if (r.fire && d > 0 && d < (ball.v + KICK.fwd) * (JUMP_V / G) * 0.95 && ball.grounded) { input.jumpBuf = 0.1; break; }
   }
   for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - ball.s; if (d > 0 && d < ball.v * 0.18 && ball.grounded) input.jumpBuf = 0.1; }
   return clamp(ff - (ball.x - tx) * 0.35 - ball.vx * 0.25, -1, 1);
@@ -1263,7 +1294,7 @@ const race = { t: 0, order: [], driftAcc: 0, driftT: 0, driftHold: 0, turboT: 0,
 
 function setupRace() {
   for (const v of vehicles) scene.remove(v.mesh.root, v.mesh.blob);
-  vehicles = RIVALS.map(r => new Vehicle(vctx, SPECS[r.spec], { ...r, ai: { lane: 0, laneT: 0, skill: 0.95 + Math.random() * 0.09 + (r.spec === 'car' ? 0.05 : 0) } }));
+  vehicles = RIVALS.map((r, i) => new Vehicle(vctx, SPECS[r.spec], { ...r, number: i + 1, ai: { lane: 0, laneT: 0, steer: 0, skill: 0.95 + Math.random() * 0.09 + (r.spec === 'car' ? 0.05 : 0) } }));
   player = vehicles[0];
   const slots = [0, 1, 2, 3, 5]; // the player starts in the middle of the grid (slot 4)
   vehicles.forEach((v, i) => {
@@ -1283,17 +1314,19 @@ function clearRace() {
 }
 
 function aiControl(v, dt, tv0) {
-  const ai = v.ai, lim = HW - v.spec.halfW - 0.6;
+  const ai = v.ai, lim = HW - v.spec.halfW - 1.3;
   if (v.stun > 0) { v.stun -= dt; ai.lane = clamp(v.x, -lim, lim); return { steer: 0, jump: 0, target: tv0 * 0.9 }; }  // dazed after a hit
   ai.laneT -= dt;
   if (ai.laneT <= 0) { ai.lane = (Math.random() * 2 - 1) * lim; ai.laneT = 2 + Math.random() * 4; }
   for (const o of vehicles) {
     if (o === v || o.dead) continue;
     const ds = o.s - v.s;
-    if (ds > 0 && ds < 18 && Math.abs(o.x - ai.lane) < 3.4) { ai.lane = clamp(o.x > 0 ? o.x - 4.5 : o.x + 4.5, -lim, lim); ai.laneT = 1.5; }
+    // pass on the side we are already on (no flip-flopping), with just enough room
+    if (ds > 0 && ds < 16 && Math.abs(o.x - ai.lane) < 2.3) { const side = v.x >= o.x ? 1 : -1; ai.lane = clamp(o.x + side * 2.8, -lim, lim); ai.laneT = 1.5; }
   }
   const { xd } = v.trackVel();
-  const steer = clamp(0.22 * (ai.lane - v.x) - 0.08 * xd, -1, 1);
+  ai.steer += (clamp(0.2 * (ai.lane - v.x) - 0.09 * xd, -0.8, 0.8) - ai.steer) * (1 - Math.exp(-8 * dt));
+  const steer = ai.steer;
   let jump = 0;
   for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - v.s; if (d > 0 && d < Math.max(v.vx, 10) * 0.1) jump = 1; }
   let target;
@@ -1313,7 +1346,7 @@ function raceStep(dt) {
       if (input.jumpBuf > 0 && v.contacts >= 2 && useKick()) { jump = input.jumpPow; input.jumpBuf = 0; input.jumpPow = 1; v.vx += KICK.fwd; sfx.kick(); }
     } else ({ steer, jump, target } = aiControl(v, dt, tv0));
     v.vy += weather.quakeLat * 0.4 * dt;
-    v.step(dt, steer, jump, target);
+    v.step(dt, steer, jump, target, v.isPlayer && !state.autoplay);
   }
   collideVehicles();
 }
@@ -1337,7 +1370,7 @@ function collideVehicles() {
       a.x -= sg * ox * wa; b.x += sg * ox * wb;
       const rel = tb.xd - ta.xd;
       if (rel * sg < 0) { a.setTrackVel(ta.sd, ta.xd + rel * wa * 1.3 - sg * 2); b.setTrackVel(tb.sd, tb.xd - rel * wb * 1.3 + sg * 2); hard = Math.abs(rel); }
-      a.r += sg * 0.25 * wa; b.r -= sg * 0.25 * wb;
+      const yawKick = Math.min(1, hard / 5) * 0.25; a.r += sg * yawKick * wa; b.r -= sg * yawKick * wb;
       // the player's shove: throw the rival sideways (up the half-pipe wall, maybe over it)
       const pl = a.isPlayer ? a : b.isPlayer ? b : null;
       if (pl) {
@@ -1760,10 +1793,11 @@ function updateRaceVisuals(dt, gdt) {
     elProg.style.width = `${clamp(player.s / track.finishS, 0, 1) * 100}%`;
     elTilt.style.left = `${50 + input.steer * 45}%`;
     drawKick();
-    elSpeed.textContent = `${Math.round(Math.max(0, player.vx) * TIME_SCALE * 3.6)} km/h`;
+    elSpeed.textContent = `${Math.round(Math.hypot(player.vx, player.vy) * TIME_SCALE * 3.6)} km/h`;
   }
 }
 function updateRaceCamera(dt) {
+  if (state.freeCam) return;   // test hook: camera placed by hand
   const v = player;
   const f = frameAt(Math.max(0, v.s - 8), F3);
   const desired = tv.copy(f.P).addScaledVector(f.U, 3.6).addScaledVector(f.B, clamp(v.x, -HW - 2, HW + 2) * 0.75);

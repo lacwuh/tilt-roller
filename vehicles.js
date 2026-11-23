@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ============================================================================
 // Vehicles for the race mode.
@@ -34,7 +36,7 @@ export class Vehicle {
     this.z0 = spec.Rw + spec.L0 - ctx.G / (4 * spec.k);
     this.reset(0, 0, 0);
     this.ai = opts.ai || null;
-    this.mesh = buildVehicleMesh(spec, opts.color, ctx.tyreTex, ctx.blobTex);
+    this.mesh = buildVehicleMesh(spec, opts, ctx.blobTex);
   }
 
   reset(s, x, v) {
@@ -44,6 +46,8 @@ export class Vehicle {
       ax: 0, ay: 0, driftI: 0, stun: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
       finished: false, finishPlace: 0, finishTime: 0, jumpCD: 0,
     });
+    // wheels start at rest on the ground (before the first physics step runs)
+    for (const w of this.wheels) { w.g = 0; w.ya = this.z0; w.F = this.ctx.G / 4; w.contact = true; }
   }
 
   // speed along the track and across it
@@ -57,7 +61,7 @@ export class Vehicle {
     this.vy = -sd * sn - xd * c;
   }
 
-  step(dt, steer, jump, target) {
+  step(dt, steer, jump, target, canDrift = true) {
     const ctx = this.ctx, tr = ctx.track(), sp = this.spec, G = ctx.G, HW = ctx.HW();
     if (this.dead) { this.zd -= G * dt; this.z += this.zd * dt; this.fallT += dt; return; }
     const F = ctx.frameAt(this.s, this.F);
@@ -117,13 +121,15 @@ export class Vehicle {
     if (jump && contacts >= 2 && !sm.noDetach && this.jumpCD <= 0) { this.zd += sp.jumpV * jump; this.jumpCD = 0.5; }
 
     // ---- drift: steering hard at speed loosens the rear tyres and lets the tail swing out
-    const wantDrift = contacts >= 1 ? clamp((Math.abs(steer) - 0.45) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
+    const wantDrift = canDrift && contacts >= 1 ? clamp((Math.abs(steer) - 0.45) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
     this.driftI += (wantDrift - this.driftI) * (1 - Math.exp(-(wantDrift > this.driftI ? 10 : 3) * dt));
     const dI = this.driftI;
 
     // ---- steering: player/AI input plus a track-following assist
     const dmax = 0.55 / (1 + Math.abs(this.vx) / 22);
-    const dTarget = clamp(-steer * dmax * 0.7 + (sp.a + sp.b) * (-F.kB) - 0.7 * this.psi, -0.6, 0.6);
+    // front wheels: driver input plus the road's curvature (heading itself is held by the assist below;
+    // feeding heading back here as well made the two loops fight and the vehicle fishtail)
+    const dTarget = clamp(-steer * dmax * 0.7 + (sp.a + sp.b) * (-F.kB), -0.6, 0.6);
     this.delta += (dTarget - this.delta) * (1 - Math.exp(-12 * dt));
 
     // ---- tyres
@@ -131,7 +137,13 @@ export class Vehicle {
     const af = Math.atan2(this.vy + sp.a * this.r, vxa) - this.delta;
     const ar = Math.atan2(this.vy - sp.b * this.r, vxa);
     this.alphaR = ar;
-    let Fx = contacts ? clamp((target - this.vx) * 1.5, -20, 22) : 0;
+    let Fx = 0;
+    if (contacts) {
+      const over = this.vx - target;
+      if (this.finished) Fx = clamp(-over * 1.5, -20, 22);
+      else if (over <= 0) Fx = Math.min(22, -over * 1.5);
+      else Fx = gT > 1.5 ? 0 : -Math.min(5, over * 0.3);    // above cruise speed: coast (downhill: no braking at all)
+    }
     Fx = clamp(Fx, -sp.muR * Nr * 1.3, sp.muR * Nr * 1.3);
     const dazed = this.stun > 0 ? 0.2 : 1;   // a rammed vehicle slides like on ice for a moment
     const muF = sp.muF * dazed, muR = sp.muR * (1 - 0.75 * dI) * dazed;
@@ -139,19 +151,20 @@ export class Vehicle {
     const rearCap = muR * Nr * Math.sqrt(Math.max(0.15, 1 - (Fx / (sp.muR * Nr * 1.3 + 1e-6)) ** 2));
     const Fyr = clamp(-7 * Nr * ar, -rearCap, rearCap);
     const gF = gT * cps - gB * sps, gL = -gT * sps - gB * cps;
-    const ax = Fx - Fyf * Math.sin(this.delta) + gF * 0.55 - 0.0015 * this.vx * Math.abs(this.vx);
+    const ax = Fx - Fyf * Math.sin(this.delta) + gF * (gF > 0 ? 0.95 : 0.55) - 0.0015 * this.vx * Math.abs(this.vx);
     const ay = Fyf * Math.cos(this.delta) + Fyr + (contacts ? gL : gL * 0.3);
     this.ax = ax; this.ay = ay;
     this.vx += (ax + this.vy * this.r) * dt;
     this.vy += (ay - this.vx * this.r) * dt;
-    this.r += ((sp.a * Fyf * Math.cos(this.delta) - sp.b * Fyr) / sp.Iz) * dt;
+    this.r += 0.2 * ((sp.a * Fyf * Math.cos(this.delta) - sp.b * Fyr) / sp.Iz) * dt;
     // stability assist (arcade ESC): yaw rate is pulled toward the road's turn rate plus what the
     // driver asks for, so the tail can slide out (drift) without spinning the vehicle round.
     // In the air the heading straightens so it lands facing down the road.
     // heading target: a small angle for normal steering, swung out to ~35 degrees in a drift
     const psiT = contacts ? -steer * (0.28 + 0.72 * dI) : 0;   // up to ~57 degrees sideways
-    const rWant = -F.kB * sd - (contacts ? 1.6 : 4) * (this.psi - psiT);
-    this.r += (rWant - this.r) * (1 - Math.exp(-(contacts ? 2.2 * (1 - 0.3 * dI) : 5) * dt));
+    // rate 12/s with gain 3 gives a heading response of ~6 rad/s, critically damped
+    const rWant = -F.kB * sd - (contacts ? 3 : 4) * (this.psi - psiT);
+    this.r += (rWant - this.r) * (1 - Math.exp(-(contacts ? 12 * (1 - 0.3 * dI) : 5) * dt));
     // in a drift the body swings out to the drift angle directly (arcade feel, beats tyre aligning torque)
     if (dI > 0.05) this.psi += (psiT - this.psi) * (1 - Math.exp(-5 * dI * dt));
     const psiMax = 0.75 + 0.45 * dI;
@@ -167,7 +180,8 @@ export class Vehicle {
       // drifting: the vehicle slides sideways but keeps travelling down the road
       // ...and keeps most of its speed through the slide
       const k = 1 - Math.exp(-14 * dI * dt);
-      this.setTrackVel(tv.sd + Math.max(0, target * 0.96 - tv.sd) * k, tv.xd + (steer * 6 - tv.xd) * k);
+      const out = clamp(-tv.sd * tv.sd * F.kB * 0.25, -6, 6);
+      this.setTrackVel(tv.sd + Math.max(0, target * 0.96 - tv.sd) * k, tv.xd + (steer * 7 + out - tv.xd) * k);
       tv = this.trackVel();
     }
     if (!contacts) {
@@ -227,7 +241,7 @@ export class Vehicle {
       w.spin -= roll / sp.Rw;
       mw.spin.rotation.x = w.spin;
       const len = Math.max(0.05, w.ya - wy);
-      mw.strut.position.set(-w.ly * 0.82, wy + len / 2, -w.lx);
+      mw.strut.position.set(-w.ly * 0.7, wy + len / 2, -w.lx);
       mw.strut.scale.y = len;
     });
     // contact shadow under the chassis
@@ -258,66 +272,140 @@ export function makeTyreTexture() {
   return t;
 }
 
-function buildVehicleMesh(sp, color, tyreTex, blobTex) {
+// ----------------------------------------------------------------------------
+// Toy-style models: rounded glossy plastic bodies, chunky rubber tyres with tread lugs,
+// bubble canopies, racing stripes and number roundels. Bodies are modelled at twice the
+// physical size and scaled by 0.5; wheels are built at physical size.
+// Model axes: x right, y up, -z forward.
+// ----------------------------------------------------------------------------
+const geoCache = new Map();
+function cached(key, make) { if (!geoCache.has(key)) geoCache.set(key, make()); return geoCache.get(key); }
+
+function tyreGeometry(R, w, lugs, lugScale = 1) {
+  const hw = w / 2, c = Math.min(w * 0.34, R * 0.32), r0 = R * 0.5, pts = [];
+  pts.push(new THREE.Vector2(r0, -hw), new THREE.Vector2(R - c, -hw));
+  for (let k = 1; k <= 5; k++) { const a = (k / 6) * Math.PI / 2; pts.push(new THREE.Vector2(R - c + Math.sin(a) * c, -hw + c - Math.cos(a) * c)); }
+  pts.push(new THREE.Vector2(R, -hw + c), new THREE.Vector2(R, hw - c));
+  for (let k = 1; k <= 5; k++) { const a = (k / 6) * Math.PI / 2; pts.push(new THREE.Vector2(R - c + Math.cos(a) * c, hw - c + Math.sin(a) * c)); }
+  pts.push(new THREE.Vector2(R - c, hw), new THREE.Vector2(r0, hw));
+  const parts = [new THREE.LatheGeometry(pts, 28)];
+  // staggered tread lugs
+  const m = new THREE.Matrix4(), lugH = R * 0.11 * lugScale;
+  for (let i = 0; i < lugs; i++) {
+    const a = (i / lugs) * Math.PI * 2, half = i % 2 ? 1 : -1;
+    const lug = new THREE.BoxGeometry(lugH * 2, w * 0.56, (2 * Math.PI * R / lugs) * 0.5);
+    lug.translate(R - lugH * 0.25, half * w * 0.2, 0);
+    lug.applyMatrix4(m.makeRotationY(a));
+    parts.push(lug);
+  }
+  const geo = mergeGeometries(parts);
+  geo.rotateZ(Math.PI / 2);   // axle along x
+  return geo;
+}
+function rimGeometry(R, w) {
+  const g = new THREE.CylinderGeometry(R * 0.56, R * 0.56, w * 0.9, 22);
+  g.rotateZ(Math.PI / 2); return g;
+}
+function rimHolesGeometry(R, w) {
+  const parts = [];
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const h = new THREE.CylinderGeometry(R * 0.13, R * 0.13, w * 0.94, 10);
+    h.translate(Math.cos(a) * R * 0.33, 0, Math.sin(a) * R * 0.33);
+    parts.push(h);
+  }
+  const g = mergeGeometries(parts); g.rotateZ(Math.PI / 2); return g;
+}
+function capGeometry(R, w) {
+  const parts = [-1, 1].map(sd => { const s = new THREE.SphereGeometry(R * 0.17, 12, 8); s.scale(0.6, 1, 1); s.translate(sd * w * 0.45, 0, 0); return s; });
+  return mergeGeometries(parts);
+}
+function numberTexture(n) {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d');
+  x.fillStyle = '#ffffff'; x.beginPath(); x.arc(64, 64, 60, 0, Math.PI * 2); x.fill();
+  x.strokeStyle = '#20202c'; x.lineWidth = 7; x.stroke();
+  x.fillStyle = '#20202c'; x.font = '900 84px system-ui, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(String(n), 64, 70);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+
+function buildVehicleMesh(sp, opts, blobTex) {
   const root = new THREE.Group(), body = new THREE.Group();
   root.add(body);
-  const paint = new THREE.MeshStandardMaterial({ color, metalness: 0.55, roughness: 0.28, envMapIntensity: 1.2 });
-  const dark = new THREE.MeshStandardMaterial({ color: '#202028', metalness: 0.4, roughness: 0.6 });
-  const glass = new THREE.MeshStandardMaterial({ color: '#0d1630', metalness: 0.9, roughness: 0.08, envMapIntensity: 1.5 });
-  const chrome = new THREE.MeshStandardMaterial({ color: '#dfe6f2', metalness: 1, roughness: 0.12 });
-  const lamp = new THREE.MeshStandardMaterial({ color: '#fff6c0', emissive: '#ffe680', emissiveIntensity: 2 });
-  const tail = new THREE.MeshStandardMaterial({ color: '#ff3040', emissive: '#ff2030', emissiveIntensity: 1.5 });
-  const box = (w, h, d, mat, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); m.castShadow = true; body.add(m); return m; };
+  const plastic = (color, extra = {}) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.3, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.1, envMapIntensity: 1.1, ...extra });
+  const paint = plastic(opts.color);
+  const white = plastic('#f6f4ee');
+  const dark = plastic('#23232e', { clearcoat: 0.4 });
+  const chrome = new THREE.MeshStandardMaterial({ color: '#e6ecf5', metalness: 1, roughness: 0.14 });
+  const glass = new THREE.MeshPhysicalMaterial({ color: '#16284d', roughness: 0.05, metalness: 0.3, clearcoat: 1, envMapIntensity: 1.6 });
+  const lamp = new THREE.MeshStandardMaterial({ color: '#fff3c4', emissive: '#ffcf5a', emissiveIntensity: 0.7, roughness: 0.2 });
+  const tail = new THREE.MeshStandardMaterial({ color: '#ff3040', emissive: '#ff1c2c', emissiveIntensity: 1.4 });
+  const rubber = new THREE.MeshStandardMaterial({ color: '#1a1a20', roughness: 0.82, metalness: 0, side: THREE.DoubleSide });
+
+  const add = (geo, mat, x, y, z, shadow = false) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = shadow; body.add(m); return m; };
+  const rbox = (w, h, d, r, mat, x, y, z, shadow = false) => add(new RoundedBoxGeometry(w, h, d, 4, r), mat, x, y, z, shadow);
+  const ball = (r, mat, x, y, z, sx = 1, sy = 1, sz = 1) => { const m = add(new THREE.SphereGeometry(r, 16, 12), mat, x, y, z); m.scale.set(sx, sy, sz); return m; };
+  const roundelMat = new THREE.MeshStandardMaterial({ map: numberTexture(opts.number || 1), roughness: 0.4 });
+  const roundel = (r, x, y, z) => { for (const sd of [-1, 1]) { const m = add(new THREE.CircleGeometry(r, 24), roundelMat, sd * x, y, z); m.rotation.y = sd * Math.PI / 2; } };
 
   if (sp.kind === 'monster') {
-    box(2.0, 0.28, 3.9, dark, 0, 0, 0);                 // frame
-    box(2.6, 0.75, 4.4, paint, 0, 0.62, 0);             // tub
-    box(2.3, 0.9, 1.8, paint, 0, 1.4, 0.35);            // cab
-    box(2.34, 0.48, 1.5, glass, 0, 1.45, 0.35);         // windows band
-    box(2.1, 0.12, 4.3, paint, 0, 1.0, 0).scale.set(1.2, 1, 1); // fender line
-    box(2.7, 0.3, 0.3, chrome, 0, 0.35, -2.3);          // front bumper
-    box(2.7, 0.3, 0.3, chrome, 0, 0.35, 2.3);           // rear bumper
-    for (const sx of [-0.75, -0.25, 0.25, 0.75]) box(0.32, 0.2, 0.18, lamp, sx, 1.93, -0.45); // roof lights
-    for (const sx of [-0.95, 0.95]) { box(0.4, 0.2, 0.08, lamp, sx, 0.7, -2.22); box(0.4, 0.2, 0.08, tail, sx, 0.7, 2.22); }
-    for (const sx of [-0.7, 0.7]) {
-      const ex = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 1.3, 10), chrome);
-      ex.position.set(sx, 1.85, 1.35); ex.castShadow = true; body.add(ex);
-    }
+    rbox(1.5, 0.34, 3.7, 0.14, dark, 0, 0, 0);                         // chassis rail
+    rbox(2.3, 0.85, 4.3, 0.24, paint, 0, 0.72, 0, true);               // tub
+    rbox(2.06, 0.95, 1.9, 0.38, paint, 0, 1.52, 0.2, true);            // cab
+    rbox(2.12, 0.46, 1.2, 0.16, glass, 0, 1.63, 0.2);                  // side windows
+    rbox(1.66, 0.46, 1.96, 0.16, glass, 0, 1.63, 0.2);                 // windscreen and rear window
+    rbox(0.56, 0.05, 4.34, 0.02, white, 0, 1.14, 0);                   // stripe over bonnet and bed
+    rbox(0.56, 0.05, 1.46, 0.02, white, 0, 1.985, 0.2);                // roof stripe
+    for (const z of [-2.28, 2.28]) { const b = add(new THREE.CapsuleGeometry(0.17, 2.1, 6, 14), chrome, 0, 0.42, z); b.rotation.z = Math.PI / 2; }
+    for (const sx of [-0.78, 0.78]) { ball(0.2, lamp, sx, 0.82, -2.13, 1, 1, 0.5); ball(0.17, tail, sx, 0.82, 2.13, 1, 1, 0.5); }
+    const bar = add(new THREE.CapsuleGeometry(0.07, 1.5, 4, 10), dark, 0, 2.1, -0.38); bar.rotation.z = Math.PI / 2;
+    for (const sx of [-0.6, -0.2, 0.2, 0.6]) ball(0.13, lamp, sx, 2.13, -0.44);
+    for (const sx of [-1.0, 1.0]) add(new THREE.CylinderGeometry(0.1, 0.1, 1.25, 12), chrome, sx, 1.75, 1.32);
+    add(new THREE.TorusGeometry(0.85, 0.08, 8, 20, Math.PI), chrome, 0, 1.14, 1.62);   // roll bar
+    roundel(0.3, 1.163, 0.72, 0.2);
   } else {
-    box(2.0, 0.42, 4.5, paint, 0, 0.12, 0);                       // lower body
-    const cab = box(1.7, 0.48, 2.1, paint, 0, 0.55, 0.25);        // cabin
-    cab.scale.set(1, 1, 1);
-    box(1.74, 0.36, 1.7, glass, 0, 0.58, 0.25);                   // glasses
-    box(1.9, 0.08, 0.5, paint, 0, 0.62, 2.1);                     // spoiler
-    for (const sx of [-0.8, 0.8]) { box(0.12, 0.35, 0.12, dark, sx, 0.42, 2.1); }
-    for (const sx of [-0.7, 0.7]) { box(0.45, 0.14, 0.06, lamp, sx, 0.22, -2.26); box(0.45, 0.14, 0.06, tail, sx, 0.22, 2.26); }
-    box(2.05, 0.06, 4.0, dark, 0, -0.1, 0);                       // floor
+    rbox(2.0, 0.55, 4.4, 0.21, paint, 0, -0.08, 0, true);              // lower body
+    rbox(1.8, 0.36, 2.9, 0.17, paint, 0, 0.2, 0.25, true);             // shoulder
+    const canopy = ball(1, new THREE.MeshPhysicalMaterial({ color: '#7fd4ff', roughness: 0.04, metalness: 0.1, clearcoat: 1, transparent: true, opacity: 0.5, envMapIntensity: 1.8 }), 0, 0.36, 0.2, 0.76, 0.5, 1.12);
+    canopy.renderOrder = 3;
+    ball(0.21, white, 0, 0.47, 0.05);                                  // the driver's helmet
+    rbox(0.22, 0.07, 0.03, 0.012, dark, 0, 0.49, -0.14);               // visor
+    rbox(0.5, 0.04, 4.42, 0.02, white, 0, 0.2, 0);                     // stripe, nose to tail
+    rbox(0.5, 0.04, 2.92, 0.02, white, 0, 0.385, 0.25);
+    for (const sx of [-0.7, 0.7]) rbox(0.1, 0.34, 0.1, 0.04, dark, sx, 0.36, 1.95);
+    rbox(2.0, 0.09, 0.5, 0.045, paint, 0, 0.56, 2.0, true);            // rear wing
+    for (const sx of [-0.66, 0.66]) ball(0.17, lamp, sx, -0.02, -2.16, 1, 1, 0.5);
+    rbox(1.5, 0.12, 0.06, 0.03, tail, 0, 0.0, 2.2);
+    rbox(2.04, 0.07, 0.34, 0.035, dark, 0, -0.34, -2.1);               // front splitter
+    for (const sx of [-0.98, 0.98]) for (const z of [-2 * sp.a, 2 * sp.b]) {
+      const f = add(new THREE.TorusGeometry(0.57, 0.13, 8, 16, Math.PI), paint, sx, -0.24, z); f.rotation.y = Math.PI / 2;   // wheel arches
+    }
+    roundel(0.2, 1.012, -0.06, 0.3);
   }
+  body.scale.setScalar(0.5);
 
-  const tyreMat = new THREE.MeshStandardMaterial({ map: tyreTex, roughness: 0.9, metalness: 0 });
-  const sideMat = new THREE.MeshStandardMaterial({ color: '#16161b', roughness: 0.85 });
-  const strutMat = new THREE.MeshStandardMaterial({ color: sp.kind === 'monster' ? '#ffd23f' : '#888899', metalness: 0.8, roughness: 0.3 });
-  const tyreGeo = new THREE.CylinderGeometry(sp.Rw, sp.Rw, sp.ww, 24, 1);
-  tyreGeo.rotateZ(Math.PI / 2);
-  const hubGeo = new THREE.CylinderGeometry(sp.Rw * 0.45, sp.Rw * 0.45, sp.ww + 0.04, 12);
-  hubGeo.rotateZ(Math.PI / 2);
+  // ---- wheels (physical size)
+  const key = sp.kind;
+  const tyreGeo = cached('tyre' + key, () => tyreGeometry(sp.Rw, sp.ww, sp.kind === 'monster' ? 16 : 26, sp.kind === 'monster' ? 1 : 0.35));
+  const rimGeo = cached('rim' + key, () => rimGeometry(sp.Rw, sp.ww));
+  const holeGeo = cached('hole' + key, () => rimHolesGeometry(sp.Rw, sp.ww));
+  const capGeo = cached('cap' + key, () => capGeometry(sp.Rw, sp.ww));
+  const rimMat = plastic(sp.kind === 'monster' ? '#ffd23f' : '#f6f4ee');
+  const strutR = sp.kind === 'monster' ? 0.05 : 0.025;
+  const strutGeo = cached('strut' + key, () => new THREE.CylinderGeometry(strutR, strutR, 1, 8));
   const wheels = [];
   for (let i = 0; i < 4; i++) {
     const group = new THREE.Group(), spin = new THREE.Group();
-    const tyre = new THREE.Mesh(tyreGeo, [tyreMat, sideMat, sideMat]); tyre.castShadow = true;
-    const hub = new THREE.Mesh(hubGeo, chrome);
-    spin.add(tyre, hub);
-    // a spoke so the wheel visibly spins
-    const spoke = new THREE.Mesh(new THREE.BoxGeometry(sp.ww + 0.06, sp.Rw * 0.18, sp.Rw * 1.5), chrome);
-    spin.add(spoke);
+    const tyre = new THREE.Mesh(tyreGeo, rubber); tyre.castShadow = true;
+    spin.add(tyre, new THREE.Mesh(rimGeo, rimMat), new THREE.Mesh(holeGeo, dark), new THREE.Mesh(capGeo, chrome));
     group.add(spin);
     root.add(group);
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(sp.kind === 'monster' ? 0.06 : 0.025, sp.kind === 'monster' ? 0.06 : 0.025, 1, 8), strutMat);
-    strut.castShadow = true;
+    const strut = new THREE.Mesh(strutGeo, chrome);
     root.add(strut);
     wheels.push({ group, spin, strut });
   }
-  body.scale.setScalar(0.5);
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(sp.halfW * 2.6, sp.halfL * 2.4),
     new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, toneMapped: false }));
   blob.renderOrder = 2;
