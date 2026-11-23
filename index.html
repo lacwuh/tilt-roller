@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Tilt Roller" />
+<meta name="theme-color" content="#24124a" />
+<title>Tilt Roller</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="flash"></div>
+<div id="hud" class="hidden">
+  <div id="tl"><div id="score">0</div><div id="mult">×1</div></div>
+  <div id="tr"><div id="level">LEVEL 1</div><div id="lives"></div></div>
+  <div id="prog"><div id="progFill"></div><span id="progFlag">🏁</span></div>
+  <div id="tilt"><div id="tiltDot"></div></div>
+</div>
+<div id="pops"></div>
+<div id="overlay">
+  <div class="panel">
+    <h1 id="ovTitle">TILT<br>ROLLER</h1>
+    <div id="ovBody">Tilt your phone <b>left / right</b> to steer.<br><b>Tap</b> anywhere to jump.<br>Jump through the rings of fire, ride the loops, survive earthquakes and fog, and reach the flags!</div>
+    <button id="ovBtn">START</button>
+    <label class="opt"><input type="checkbox" id="invert" /> invert tilt</label>
+    <div id="ovHint"></div>
+  </div>
+</div>
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }</script>
+<script type="module" src="game.js"></script>
+</body>
+</html>

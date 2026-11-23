@@ -1,0 +1,50 @@
+html, body {
+  margin: 0; height: 100%; overflow: hidden; background: #24124a;
+  touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #fff;
+}
+#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+.hidden { display: none !important; }
+#hud { position: fixed; inset: 0; pointer-events: none; }
+#tl { position: absolute; left: 16px; top: calc(env(safe-area-inset-top) + 10px); }
+#score { font-size: 34px; font-weight: 900; letter-spacing: 1px; text-shadow: 0 2px 0 #0006, 0 0 12px #0008; }
+#mult { font-size: 18px; font-weight: 800; color: #ffd23f; text-shadow: 0 2px 0 #0006; }
+#tr { position: absolute; right: 16px; top: calc(env(safe-area-inset-top) + 10px); text-align: right; }
+#level { font-weight: 800; font-size: 16px; opacity: .9; text-shadow: 0 2px 0 #0006; }
+#lives { font-size: 22px; letter-spacing: 3px; color: #ff4d6d; text-shadow: 0 2px 0 #0006; }
+#prog { position: absolute; left: 50%; transform: translateX(-50%); top: calc(env(safe-area-inset-top) + 70px);
+  width: min(56vw, 320px); height: 8px; background: #0005; border-radius: 4px; }
+#progFill { height: 100%; width: 0; background: linear-gradient(90deg, #3bceac, #ffd23f); border-radius: 4px; }
+#progFlag { position: absolute; right: -12px; top: -13px; font-size: 20px; }
+#tilt { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 20px); transform: translateX(-50%);
+  width: 160px; height: 6px; background: #0004; border-radius: 3px; }
+#tiltDot { position: absolute; top: -5px; left: 50%; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 8px #fff; }
+#pops { position: fixed; left: 0; right: 0; top: 30%; text-align: center; pointer-events: none; }
+.pop { font-size: 30px; font-weight: 900; color: #fff; text-shadow: 0 3px 0 #0007, 0 0 18px #ff7a3a;
+  animation: pop 1.4s ease-out forwards; margin: 4px 0; }
+.pop.good { color: #ffd23f; }
+.pop.bad { color: #ff5b5b; }
+.pop.big { font-size: 54px; }
+.pop.info { color: #8ff0ff; }
+@keyframes pop {
+  0% { transform: scale(.4); opacity: 0; }
+  15% { transform: scale(1.15); opacity: 1; }
+  30% { transform: scale(1); }
+  80% { opacity: 1; }
+  100% { transform: translateY(-60px); opacity: 0; }
+}
+#overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, #0000 0%, #0009 100%); padding: 16px; box-sizing: border-box; }
+.panel { background: #1b0f3acc; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border: 1px solid #ffffff30; border-radius: 22px; padding: 26px 22px; max-width: 360px; width: 100%;
+  text-align: center; box-shadow: 0 10px 40px #0008; box-sizing: border-box; }
+h1 { margin: 0 0 12px; font-size: 46px; line-height: .95; font-weight: 900; letter-spacing: 2px;
+  background: linear-gradient(180deg, #ffd23f, #ff5b3a); -webkit-background-clip: text; background-clip: text; color: transparent; }
+#ovBody { font-size: 16px; line-height: 1.45; opacity: .92; margin-bottom: 18px; }
+button { font: inherit; font-weight: 900; font-size: 22px; padding: 14px 40px; border: 0; border-radius: 999px;
+  background: linear-gradient(180deg, #ffd23f, #ff7a3a); color: #3a1600; box-shadow: 0 6px 0 #a83f12, 0 10px 20px #0006; cursor: pointer; }
+button:active { transform: translateY(4px); box-shadow: 0 2px 0 #a83f12; }
+.opt { display: block; margin-top: 16px; font-size: 14px; opacity: .8; }
+#ovHint { margin-top: 10px; font-size: 12px; opacity: .6; }
+#flash { position: fixed; inset: 0; pointer-events: none; background: #ff6a00; opacity: 0; transition: opacity .35s; }
