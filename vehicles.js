@@ -43,7 +43,7 @@ export class Vehicle {
     Object.assign(this, {
       s, x, psi: 0, vx: v, vy: 0, r: 0, delta: 0, surfTh: 0, surfH: 0,
       z: this.z0, zd: 0, th: 0, thd: 0, ph: 0, phd: 0,
-      ax: 0, ay: 0, driftI: 0, stun: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
+      ax: 0, ay: 0, driftI: 0, stun: 0, wetT: 0, inWater: 0, onWet: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
       finished: false, finishPlace: 0, finishTime: 0, jumpCD: 0,
     });
     // wheels start at rest on the ground (before the first physics step runs)
@@ -121,7 +121,12 @@ export class Vehicle {
     if (jump && contacts >= 2 && !sm.noDetach && this.jumpCD <= 0) { this.zd += sp.jumpV * jump; this.jumpCD = 0.5; }
 
     // ---- drift: steering hard at speed loosens the rear tyres and lets the tail swing out
-    const wantDrift = canDrift && contacts >= 1 ? clamp((Math.abs(steer) - 0.45) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
+    // water and wet road: wading drag in a ford; rain-soaked turns (and wet tyres just after a ford) have far less grip
+    const wat = contacts ? (sm.water || 0) : 0;
+    this.wetT = wat > 0 ? 1.5 : Math.max(0, this.wetT - dt);
+    const slick = sm.wet ? 1 : this.wetT > 0 ? 0.5 : 0;
+    this.inWater = wat; this.onWet = contacts && sm.wet ? 1 : 0;
+    const wantDrift = canDrift && contacts >= 1 ? clamp((Math.abs(steer) - (0.45 - 0.15 * slick)) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
     this.driftI += (wantDrift - this.driftI) * (1 - Math.exp(-(wantDrift > this.driftI ? 10 : 3) * dt));
     const dI = this.driftI;
 
@@ -146,12 +151,12 @@ export class Vehicle {
     }
     Fx = clamp(Fx, -sp.muR * Nr * 1.3, sp.muR * Nr * 1.3);
     const dazed = this.stun > 0 ? 0.2 : 1;   // a rammed vehicle slides like on ice for a moment
-    const muF = sp.muF * dazed, muR = sp.muR * (1 - 0.75 * dI) * dazed;
+    const muF = sp.muF * dazed * (1 - 0.6 * slick), muR = sp.muR * (1 - 0.75 * dI) * dazed * (1 - 0.7 * slick);
     const Fyf = clamp(-7 * Nf * af, -muF * Nf, muF * Nf);
     const rearCap = muR * Nr * Math.sqrt(Math.max(0.15, 1 - (Fx / (sp.muR * Nr * 1.3 + 1e-6)) ** 2));
     const Fyr = clamp(-7 * Nr * ar, -rearCap, rearCap);
     const gF = gT * cps - gB * sps, gL = -gT * sps - gB * cps;
-    const ax = Fx - Fyf * Math.sin(this.delta) + gF * (gF > 0 ? 0.95 : 0.55) - 0.0015 * this.vx * Math.abs(this.vx);
+    const ax = Fx - Fyf * Math.sin(this.delta) + gF * (gF > 0 ? 0.95 : 0.55) - 0.0015 * this.vx * Math.abs(this.vx) - wat * 0.9 * this.vx;
     const ay = Fyf * Math.cos(this.delta) + Fyr + (contacts ? gL : gL * 0.3);
     this.ax = ax; this.ay = ay;
     this.vx += (ax + this.vy * this.r) * dt;
@@ -180,8 +185,8 @@ export class Vehicle {
       // drifting: the vehicle slides sideways but keeps travelling down the road
       // ...and keeps most of its speed through the slide
       const k = 1 - Math.exp(-14 * dI * dt);
-      const out = clamp(-tv.sd * tv.sd * F.kB * 0.25, -6, 6);
-      this.setTrackVel(tv.sd + Math.max(0, target * 0.96 - tv.sd) * k, tv.xd + (steer * 7 + out - tv.xd) * k);
+      const out = clamp(-tv.sd * tv.sd * F.kB * (0.25 + 0.15 * slick), -8, 8);
+      this.setTrackVel(tv.sd + Math.max(0, target * 0.96 - tv.sd) * k, tv.xd + (steer * (7 - 1.5 * slick) + out - tv.xd) * k);
       tv = this.trackVel();
     }
     if (!contacts) {

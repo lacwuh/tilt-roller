@@ -20,7 +20,7 @@ const BOUNCE_E = 0.42, BOUNCE_MIN = 9;
 const KICK = { max: 2, recharge: 2.0, fwd: 10 };   // rechargeable jump kick: charges, seconds per charge, forward burst
 const TIME_SCALE = 1.45; // game time runs faster than real time: snappier rolling, falling and jumping
 const STEER_ACC = 26;
-const K = { NORMAL: 0, BOOST: 1, KICK: 2, LOOP: 3, HELIX: 4, FINISH: 5, START: 6, RING: 7 };
+const K = { NORMAL: 0, BOOST: 1, KICK: 2, LOOP: 3, HELIX: 4, FINISH: 5, START: 6, RING: 7, WATER: 8 };
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -72,6 +72,7 @@ function generateTrack(seed, level, race = false) {
   const add = o => smp.push({
     pos: pos.clone(), h, p, bank: o.bank || 0, solid: o.solid !== false, berm: o.berm || 0,
     minV: o.minV || 0, boost: o.boost || 0, noDetach: !!o.noDetach, kind: o.kind || 0,
+    wet: o.wet || 0, water: 0,   // wet: slippery rain-soaked surface; water: depth of standing water
   });
   add({ kind: K.START });
 
@@ -90,21 +91,22 @@ function generateTrack(seed, level, race = false) {
   const straight = (L, o = {}) => run(L, () => o);
 
   // banked curve ("berm"): yaw rate follows 6t(1-t); bank & outer wall follow it
-  function curve(ang, rad, pA = 0) {
-    const h0 = h, p0 = p, L = Math.abs(ang) * rad;
+  function curve(ang, rad, pA = 0, wet = false) {
+    const h0 = h, p0 = p, L = Math.abs(ang) * rad, sW = len();
     const b0 = Math.sign(ang) * Math.min(35 * DEG, Math.atan(vt * vt * 1.5 / (rad * G)) * 0.8);
     run(L, t => {
       const e = 4 * t * (1 - t);
-      return { h: h0 + ang * smooth(t), p: p0 + pA * Math.sin(2 * Math.PI * t), bank: b0 * e, berm: Math.sign(ang) * Math.min(1, e * 3) };
+      return { h: h0 + ang * smooth(t), p: p0 + pA * Math.sin(2 * Math.PI * t), bank: b0 * e, berm: Math.sign(ang) * Math.min(1, e * 3), wet: wet ? 1 : 0 };
     });
     p = p0;
+    if (wet) features.push({ type: 'wet', s0: sW, s1: len() });
   }
   const chooseDir = () => (h > 25 * DEG ? -1 : h < -25 * DEG ? 1 : rnd() < 0.5 ? -1 : 1);
   function turn() {
     const d = chooseDir();
     let a = R(35, 75) * DEG;
     a = Math.max(15 * DEG, Math.min(a, 65 * DEG - d * h));
-    curve(d * a, R(75, 115));
+    curve(d * a, R(75, 115), 0, rnd() < 0.35);
   }
   function scurve() {
     if (Math.abs(h) > 20 * DEG) return turn();
@@ -137,20 +139,34 @@ function generateTrack(seed, level, race = false) {
     run(45, t => ({ p: p0 - A + A * smooth(t) }));
     p = p0;
   }
+  // stream crossing: the road dips into a shallow ford with a flat bed
+  function ford() {
+    cp(); straight(30);
+    const A = 5 * DEG, p0 = p, i0 = smp.length - 1;
+    run(28, t => ({ p: p0 - A * Math.sin(Math.PI * t), kind: K.WATER }));
+    const iA = smp.length - 1;
+    run(R(26, 36), () => ({ kind: K.WATER }));
+    const iB = smp.length - 1;
+    run(28, t => ({ p: p0 + A * Math.sin(Math.PI * t), kind: K.WATER }));
+    p = p0;
+    features.push({ type: 'ford', i0, i1: smp.length - 1, iMid: (iA + iB) >> 1, s0: iA * DS, s1: iB * DS, side: rnd() < 0.5 ? -1 : 1 });
+    straight(30); cp();
+  }
   // long sweeping spiral, one or two full turns, climbing or descending: made for holding a drift
   function sweeper() {
     cp();
     const Rs = R(58, 76), turns = rnd() < 0.25 ? 2 : 1, d = h > 15 * DEG ? -1 : h < -15 * DEG ? 1 : rnd() < 0.5 ? -1 : 1;
     const rise = (rnd() < 0.5 ? -1 : 1) * 16 * turns;
     const L = 2 * Math.PI * Rs * turns, h0 = h, b0 = d * 14 * DEG;
-    const s0 = len(); let prev = 0;
+    const s0 = len(), wet = rnd() < 0.3; let prev = 0;
     run(L, t => {
       const sm = smooth(t); const off = new V3(0, rise * (sm - prev), 0); prev = sm;
       const e = smooth(Math.min(1, t / 0.05, (1 - t) / 0.05));
-      return { h: h0 + d * 2 * Math.PI * turns * t, off, bank: b0 * e, berm: d, kind: K.HELIX };
+      return { h: h0 + d * 2 * Math.PI * turns * t, off, bank: b0 * e, berm: d, kind: K.HELIX, wet: wet ? 1 : 0 };
     });
     h = h0;
     features.push({ type: 'loop', s0, s1: len(), name: 'SWEEPER!' });
+    if (wet) features.push({ type: 'wet', s0, s1: len() });
     straight(40); cp();
   }
   function valley() {
@@ -182,7 +198,7 @@ function generateTrack(seed, level, race = false) {
     const d = chooseDir();
     let a = R(40, 80) * DEG;
     a = Math.max(15 * DEG, Math.min(a, 65 * DEG - d * h));
-    curve(d * a, R(80, 115), R(10, 18) * DEG * (rnd() < 0.5 ? 1 : -1));
+    curve(d * a, R(80, 115), R(10, 18) * DEG * (rnd() < 0.5 ? 1 : -1), rnd() < 0.3);
   }
   // off-camber straight: the road leans sideways with no wall, the player must tilt against it
   function camber() {
@@ -272,10 +288,10 @@ function generateTrack(seed, level, race = false) {
   straight(race ? 75 : 30, { kind: K.START }); cp();
   const kicker = () => { straight(35); jump(true); };
   const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, mountain, mountain, valley, valley, kicker, kicker, climb, twistHill, twistHill, descent, descent, () => downhill(R(12, 22) * DEG, R(50, 80))];
-  const specials = race ? ['vloop', 'helix', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper'] : ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper'];
+  const specials = race ? ['vloop', 'helix', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper', 'ford'] : ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper', 'ford'];
   for (let i = 0; i < Math.min(level - 1, 8); i++) specials.push(pick(race ? ['jump', 'vloop', 'helix', 'jump', 'pit'] : ['ring', 'jump', 'vloop', 'helix', 'ring', 'jump', 'pit', 'pit']));
   for (let i = specials.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [specials[i], specials[j]] = [specials[j], specials[i]]; }
-  const fns = { vloop, helix, ring: ringFire, jump: () => jump(false), pit, sweeper };
+  const fns = { vloop, helix, ring: ringFire, jump: () => jump(false), pit, sweeper, ford };
   for (const sp of specials) {
     const nc = 2 + (rnd() < 0.5 ? 1 : 0);
     for (let c = 0; c < nc; c++) { cp(); pick(conns)(); }
@@ -309,6 +325,13 @@ function generateTrack(seed, level, race = false) {
     const ds = P[i + 1].distanceTo(P[i - 1]) || DS * 2;
     dT.subVectors(T[i + 1], T[i - 1]).divideScalar(ds);
     kN[i] = dT.dot(U[i]); kB[i] = dT.dot(B[i]);
+  }
+  // fords: the water surface is level, 0.32 above the flat bed; store the depth per sample
+  for (const f of features) if (f.type === 'ford') {
+    f.level = P[f.iMid].y + 0.32;
+    let a = f.i1, b2 = f.i0;
+    for (let i = f.i0; i <= f.i1; i++) { const d = f.level - P[i].y; if (d > 0.02) { smp[i].water = d; a = Math.min(a, i); b2 = Math.max(b2, i); } }
+    f.s0 = a * DS; f.s1 = b2 * DS;
   }
   let minY = Infinity; for (const q of P) minY = Math.min(minY, q.y);
   features.sort((a, b2) => (a.s ?? a.s0) - (b2.s ?? b2.s0));
@@ -494,6 +517,7 @@ scene.add(fx.points, confetti.points);
 // World building (meshes for the current track)
 // ============================================================================
 const COL = {
+  ford: new THREE.Color('#2b7f8f'),
   road: new THREE.Color('#3346a8'), boost: new THREE.Color('#14a7bd'), kick: new THREE.Color('#e07a2e'),
   loop: new THREE.Color('#8a3fd1'), finish: new THREE.Color('#2a9d5c'), red: new THREE.Color('#ff3355'),
   white: new THREE.Color('#f2f2f2'), side: new THREE.Color('#2a1f5c'), bottom: new THREE.Color('#1a1238'),
@@ -501,8 +525,8 @@ const COL = {
 const tmpC = new THREE.Color();
 function roadColor(sm, i) {
   const base = sm.kind === K.BOOST ? COL.boost : sm.kind === K.KICK ? COL.kick
-    : (sm.kind === K.LOOP || sm.kind === K.HELIX) ? COL.loop : sm.kind === K.FINISH ? COL.finish : COL.road;
-  return tmpC.copy(base).multiplyScalar(Math.floor(i * DS / 3) % 2 ? 0.86 : 1);
+    : (sm.kind === K.LOOP || sm.kind === K.HELIX) ? COL.loop : sm.kind === K.FINISH ? COL.finish : sm.kind === K.WATER ? COL.ford : COL.road;
+  return tmpC.copy(base).multiplyScalar((Math.floor(i * DS / 3) % 2 ? 0.86 : 1) * (sm.wet ? 0.72 : 1));
 }
 // ---- half-pipe cross-section: flat road of half width HW, then circular walls of radius PIPE.R
 // rising to a lip; the outside of banked curves gets a taller, nearly vertical wall.
@@ -598,6 +622,7 @@ function checker(x, w, h, n, m) {
 const basis = (x, y, z) => new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
 
 let flagGeos = [];
+let waterTex = [];   // animated water textures of the current world
 let chevMats = [];
 function buildWorld(tr) {
   const g = new THREE.Group();
@@ -703,6 +728,84 @@ function buildWorld(tr) {
     }
   }
 
+  // ---- water: fords with a waterfall, wet turns with a glossy film, rain clouds above both
+  waterTex = [];
+  const mkWaterTex = () => {
+    const t = canvasTex(256, 256, (x, w, h) => {
+      x.fillStyle = '#2f9fe8'; x.fillRect(0, 0, w, h);
+      x.lineCap = 'round';
+      for (let k = 0; k < 46; k++) {
+        const y = Math.random() * h, x0 = Math.random() * w, L2 = 30 + Math.random() * 90;
+        x.strokeStyle = `rgba(255,255,255,${0.15 + Math.random() * 0.45})`; x.lineWidth = 1 + Math.random() * 3;
+        for (const o of [0, -w]) { x.beginPath(); x.moveTo(x0 + o, y); x.bezierCurveTo(x0 + o + L2 * 0.3, y - 6, x0 + o + L2 * 0.6, y + 6, x0 + o + L2, y); x.stroke(); }
+      }
+    });
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+  };
+  const rainPuffs = [];
+  const puffCluster = (c, n, size) => { for (let k = 0; k < n; k++) rainPuffs.push([c.x + (Math.random() - 0.5) * size * 2.2, c.y + (Math.random() - 0.5) * size * 0.5, c.z + (Math.random() - 0.5) * size * 2.2, size * (0.7 + Math.random() * 0.6)]); };
+  const UP = new V3(0, 1, 0);
+  for (const f of tr.features) if (f.type === 'ford') {
+    // the pool: a level sheet whose edge follows the shoreline on the half-pipe walls
+    const pos = [], uv = [], idx = []; let n = 0;
+    for (let i = f.i0; i <= f.i1; i++) {
+      const d = tr.smp[i].water; if (!(d > 0)) continue;
+      const w = HW + Math.sqrt(Math.max(0, 2 * PIPE.R * d - d * d));
+      const P = tr.P[i], B = tr.B[i];
+      for (const sd of [-1, 1]) { pos.push(P.x + B.x * sd * w, f.level, P.z + B.z * sd * w); uv.push(sd * w / 9, i * DS / 9); }
+      if (n > 0) { const a = (n - 1) * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+      n++;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx); geo.computeVertexNormals();
+    const tex = mkWaterTex(); waterTex.push({ tex, vx: 0.22 * f.side, vy: 0.03 });
+    const pool = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity: 0.82, roughness: 0.08, metalness: 0.05, envMapIntensity: 0.7, emissive: '#1668b0', emissiveIntensity: 0.55, side: THREE.DoubleSide, depthWrite: false }));
+    pool.renderOrder = 1; g.add(pool);
+    // the waterfall feeding it, pouring from a rain cloud above one side
+    frameAtT(tr, f.iMid * DS, F);
+    const H = 13, lat = f.side * (HW + 0.8);
+    f.Pm = F.P.clone(); f.T = F.T.clone(); f.B = F.B.clone();
+    f.fallBase = F.P.clone().addScaledVector(F.B, lat); f.fallBase.y = f.level;
+    const tex2 = mkWaterTex(); waterTex.push({ tex: tex2, vx: 1.6, vy: 0 });
+    const fallMat = new THREE.MeshStandardMaterial({ map: tex2, transparent: true, opacity: 0.75, roughness: 0.1, metalness: 0.2, envMapIntensity: 1.4, side: THREE.DoubleSide, depthWrite: false, emissive: '#3a86c8', emissiveIntensity: 0.25 });
+    for (const [wd, ax] of [[6, F.T], [2.6, F.B]]) {
+      const pg = new THREE.PlaneGeometry(wd, H);
+      const a = pg.attributes.uv; for (let k = 0; k < a.count; k++) a.setXY(k, a.getY(k) * 2.2, a.getX(k) * wd / 6);   // streaks run vertically
+      const fall = new THREE.Mesh(pg, fallMat);
+      fall.position.copy(f.fallBase).addScaledVector(UP, H / 2);
+      fall.quaternion.copy(basis(ax, UP, new V3().crossVectors(ax, UP)));
+      fall.renderOrder = 1; g.add(fall);
+    }
+    puffCluster(f.fallBase.clone().addScaledVector(UP, H + 0.6), 10, 5);
+  }
+  const sheenMat = new THREE.MeshStandardMaterial({ color: '#0a1838', transparent: true, opacity: 0.5, roughness: 0.03, metalness: 0.95, envMapIntensity: 2.2, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  for (const f of tr.features) if (f.type === 'wet') {
+    // a mirror-like film of water over the road and the foot of the walls
+    const i0 = Math.round(f.s0 / DS), i1 = Math.round(f.s1 / DS), u1 = 1.6;
+    const hw = PIPE.R * (1 - Math.cos(Math.asin(u1 / PIPE.R)));
+    const xs = [[-(HW + u1), hw], [-HW, 0], [0, 0], [HW, 0], [HW + u1, hw]];
+    const pos = [], idx = []; let n = 0;
+    for (let i = i0; i <= i1; i += 2) {
+      const P = tr.P[i], B = tr.B[i], U = tr.U[i];
+      for (const [x, h] of xs) pos.push(P.x + B.x * x + U.x * (h + 0.04), P.y + B.y * x + U.y * (h + 0.04), P.z + B.z * x + U.z * (h + 0.04));
+      if (n > 0) for (let j = 0; j < 4; j++) { const a = (n - 1) * 5 + j, b = n * 5 + j; idx.push(a, b, a + 1, a + 1, b, b + 1); }
+      n++;
+      if ((i - i0) % 70 === 0) puffCluster(new V3(P.x, P.y + 16 + Math.random() * 4, P.z).addScaledVector(B, (Math.random() - 0.5) * 12), 5, 5);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx); geo.computeVertexNormals();
+    const film = new THREE.Mesh(geo, sheenMat); film.renderOrder = 1; g.add(film);
+  }
+  if (rainPuffs.length) {
+    const rc = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 2), new THREE.MeshStandardMaterial({ color: '#737a9c', roughness: 1, emissive: '#2a2f55', emissiveIntensity: 0.3 }), rainPuffs.length);
+    const mm = new THREE.Matrix4(), q1 = new THREE.Quaternion();
+    rainPuffs.forEach((pf, k) => { mm.compose(new V3(pf[0], pf[1], pf[2]), q1, new V3(pf[3], pf[3] * 0.55, pf[3])); rc.setMatrixAt(k, mm); });
+    g.add(rc);
+  }
+
   // ---- pillars down to the ground
   const groundY = tr.minY - 80;
   const noPil = [];
@@ -761,7 +864,7 @@ function setTrack(tr) {
   track = tr;
   world = buildWorld(tr);
   scene.add(world);
-  fx.clear(); confetti.clear();
+  fx.clear(); confetti.clear(); smoke.clear();
 }
 
 // ============================================================================
@@ -808,6 +911,7 @@ function noise(dur, freq, vol, type = 'lowpass') {
 }
 const sfx = {
   jump: () => tone(320, 720, 0.18, 'square', 0.08),
+  splash: () => { noise(0.55, 1500, 0.5, 'bandpass'); noise(0.4, 350, 0.45); },
   kick: () => { tone(320, 720, 0.18, 'square', 0.08); noise(0.35, 500, 0.35, 'lowpass'); tone(90, 220, 0.3, 'sawtooth', 0.08); },
   empty: () => tone(180, 140, 0.08, 'square', 0.05),
   turbo: () => { tone(300, 1200, 0.45, 'sawtooth', 0.06); noise(0.4, 1800, 0.25, 'bandpass'); },
@@ -1001,12 +1105,14 @@ function groundStep(dt) {
     aS = gT * (down ? 0.95 : 0.5) + (target - ball.v) * pull - (over ? 0.003 * (ball.v * ball.v - target * target) : 0);
   }
   ball.v += aS * dt;
+  if (sm.water > 0) ball.v -= Math.min(sm.water, 0.4) * 0.6 * ball.v * dt;   // wading through the ford
   if (!state.finished && sm.minV && ball.v < sm.minV) ball.v = sm.minV;
   ball.v = clamp(ball.v, state.finished ? 0 : 6, 95);
 
   const sf = surfOrFlat(ball.x, sm), th = sf.th, ct = Math.cos(th), st = Math.sin(th);
   const onWall = Math.abs(th) > 0.05;
-  const aT = (gB + input.steer * STEER_ACC - ball.v * ball.v * f.kB + weather.quakeLat) * ct + gU * st - ball.vx * (onWall ? 0.5 : 2.2);
+  // wet road: half the steering bite and almost no sideways friction, so the ball skates wide
+  const aT = (gB + input.steer * STEER_ACC * (sm.wet ? 0.5 : 1) - ball.v * ball.v * f.kB + weather.quakeLat) * ct + gU * st - ball.vx * (onWall ? 0.5 : sm.wet ? 0.7 : 2.2);
   ball.vx += aT * dt; ball.x += ball.vx * ct * dt;
   // the outside of a banked curve is a full wall up to the lip
   const side = ball.x < 0 ? -1 : 1;
@@ -1214,6 +1320,16 @@ function logic(dt) {
   if (!state.finished) state.levelTime += dt;
   if (state.mode === 'play' && ball.grounded && !ball.dead && !state.finished) state.score += ball.v * dt * 0.5 * state.mult;
 
+  // water and wet road
+  {
+    const smw = track.smp[frameAt(ball.s, F4).i];
+    const inW = ball.grounded && !ball.dead && smw.water > 0;
+    if (inW && !ball.inWater) { splashBurst(ball.pos.clone(), F4.U, 46, 9); sfx.splash(); if (state.mode === 'play') popup('SPLASH!', 'info'); }
+    ball.inWater = inW;
+    const onWet = !!smw.wet && !ball.dead;
+    if (onWet && !ball.onWet && state.mode === 'play') popup('WET TURN!', 'info');
+    ball.onWet = onWet;
+  }
   // boost entry
   const kind = track.smp[frameAt(ball.s, F4).i].kind;
   if (kind === K.BOOST && ball.lastKind !== K.BOOST && ball.grounded) { sfx.boost(); }
@@ -1278,8 +1394,48 @@ function weatherLogic(dt, focus, onQuake) {
 // ============================================================================
 // Race mode: the player's monster truck vs AI monster trucks and cars
 // ============================================================================
-const smoke = new Particles(1600, false, true);
+const smoke = new Particles(3000, false, true);
 scene.add(smoke.points);
+
+// ---- water effects shared by both modes: splashes, spray, rain, waterfall foam
+const SPL0 = [0.93, 0.97, 1, 0.9], SPL1 = [0.75, 0.9, 1, 0];
+const sv = new V3(), sp2 = new V3(), WORLD_UP = new V3(0, 1, 0);
+// a burst of droplets thrown up and outward (entering the water)
+function splashBurst(at, up, n, power) {
+  for (let k = 0; k < n; k++) {
+    sv.set(Math.random() - 0.5, 0, Math.random() - 0.5).multiplyScalar(power * 1.4).addScaledVector(up, power * (0.5 + Math.random()));
+    smoke.spawn(at, sv, 0.6 + Math.random() * 0.5, SPL0, SPL1, 0.22 + Math.random() * 0.35, 0.1, 22, 0.6);
+  }
+}
+// continuous spray thrown backwards and sideways from a wheel or the ball (fr = track frame)
+function spray(at, fr, speed, n, big) {
+  for (let k = 0; k < n; k++) {
+    sv.copy(fr.T).multiplyScalar(-speed * (0.1 + Math.random() * 0.25)).addScaledVector(fr.B, (Math.random() - 0.5) * (big ? 9 : 4)).addScaledVector(fr.U, (big ? 3.5 : 1.2) + Math.random() * (big ? 6 : 2));
+    smoke.spawn(at, sv, big ? 0.55 + Math.random() * 0.4 : 0.35, big ? SPL0 : [0.9, 0.95, 1, 0.4], SPL1, big ? 0.2 + Math.random() * 0.3 : 0.5, big ? 0.1 : 1.4, big ? 20 : 2, 0.8);
+  }
+}
+function updateWaterFx(dt, focus, focusS) {
+  for (const w of waterTex) { w.tex.offset.x -= w.vx * dt; w.tex.offset.y += w.vy * dt; }
+  const i = clamp(Math.round(focusS / DS), 0, track.N - 1);
+  // rain over wet turns
+  if (track.smp[i].wet) {
+    const T = track.T[i], B = track.B[i];
+    for (let k = 0; k < 16; k++) {
+      sp2.copy(focus).addScaledVector(T, -6 + Math.random() * 42).addScaledVector(B, (Math.random() - 0.5) * 22).addScaledVector(WORLD_UP, 4 + Math.random() * 9);
+      sv.set(0, -36, 0);
+      smoke.spawn(sp2, sv, 0.32, [0.85, 0.93, 1, 0.8], [0.85, 0.93, 1, 0.45], 0.17, 0.12, 0, 0);
+    }
+  }
+  // foam where the waterfall hits the pool
+  for (const f of track.features) if (f.type === 'ford' && f.fallBase && Math.abs(f.s0 - focusS) < 170) {
+    for (let k = 0; k < 4; k++) {
+      sp2.copy(f.fallBase).addScaledVector(f.T, (Math.random() - 0.5) * 5).addScaledVector(f.B, (Math.random() - 0.5) * 2);
+      sv.set((Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5);
+      smoke.spawn(sp2, sv, 0.6, SPL0, SPL1, 0.5, 1.3, 14, 1);
+    }
+  }
+}
+
 const vctx = { mkF, G, frameAt: (s2, o) => frameAt(s2, o), track: () => track, HW: () => HW, tyreTex: makeTyreTexture(), blobTex, surfAt, lipX };
 const RIVALS = [
   { name: 'YOU', spec: 'monster', color: '#ff3b5c', isPlayer: true },
@@ -1333,6 +1489,7 @@ function aiControl(v, dt, tv0) {
   if (v.finished) target = 10;
   else if (v.isPlayer) target = tv0;
   else target = tv0 * ai.skill * clamp(1 + (player.s - v.s) * 0.0012, 0.86, 1.14); // keep the pack together
+  if (track.smp[clamp(Math.round(v.s / DS), 0, track.N - 1)].wet) target *= 0.94;      // drivers lift a little in the wet
   return { steer, jump, target };
 }
 
@@ -1441,6 +1598,16 @@ function raceLogic(dt) {
     }
     if (v.dead && v.fallT > 1.3) { respawnVehicle(v); v.takedownDone = false; v.hitBy = null; }
   }
+  for (const v of vehicles) {
+    const wNow = v.inWater > 0 && !v.dead;
+    if (wNow && !v.wasInWater && Math.abs(v.s - player.s) < 160) {
+      splashBurst(v.mesh.root.position.clone(), v.F.U, 40, 8);
+      if (v.isPlayer) { sfx.splash(); popup('SPLASH!', 'info'); }
+    }
+    v.wasInWater = wNow;
+  }
+  if (player.onWet && !race.wasWet && !player.dead) popup('WET TURN!', 'info');
+  race.wasWet = player.onWet;
   if (player.dead && !player.fallAnnounced) { popup('CRASHED!', 'bad'); sfx.fall(); player.fallAnnounced = true; }
   if (!player.dead) player.fallAnnounced = false;
   // rank: finished vehicles first (by finishing order), then by distance
@@ -1653,6 +1820,14 @@ function updateVisuals(dt, gdt = dt) {
   }
   ballMesh.visible = ball.invuln <= 0 || Math.floor(state.time * 12) % 2 === 0;
 
+  // spray: big rooster tail in the ford, fine mist on wet road
+  {
+    const f = frameAt(ball.s, F4), sm = track.smp[f.i];
+    if (!ball.dead && ball.grounded && sm.water > 0) spray(wv.copy(ball.pos).addScaledVector(f.U, -0.3), f, ball.v, 6, true);
+    else if (!ball.dead && ball.grounded && sm.wet && Math.random() < 0.7) spray(wv.copy(ball.pos).addScaledVector(f.U, -0.5), f, ball.v, 1, false);
+    updateWaterFx(dt, ball.pos, ball.s);
+    smoke.update(gdt);
+  }
   // trails / burn / boost sparkles
   if (ball.burnT > 0) for (let k = 0; k < 3; k++) fx.spawn(tv.copy(ball.pos).add(new V3((Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8)), new V3(0, 3, 0), 0.4, [1, 0.8, 0.3, 1], [0.8, 0.1, 0, 0], 1.0, 0.2, -2, 1);
   if (!ball.dead && ball.grounded && track.smp[frameAt(ball.s, F4).i].kind === K.BOOST) {
@@ -1756,8 +1931,14 @@ function updateRaceVisuals(dt, gdt) {
       v.wheelWorld(i, wv);
       smoke.spawn(wv, tv.set((Math.random() - 0.5) * 3, 1.5 + Math.random() * 2, (Math.random() - 0.5) * 3), 1.1, [0.85, 0.85, 0.9, 0.55], [0.7, 0.7, 0.75, 0], 1.2, 4.5, -0.5, 1.5);
     }
+    // spray: rooster tails from every wheel in the ford, mist from the rear wheels on wet road
+    if (!v.dead && Math.abs(v.s - player.s) < 150) {
+      if (v.inWater > 0) for (let i = 0; i < 4; i++) { v.wheelWorld(i, wv); spray(wv, v.F, Math.abs(v.vx), 2, true); }
+      else if (v.onWet && v.vx > 12 && v.contacts) for (const i of [2, 3]) if (Math.random() < 0.6) { v.wheelWorld(i, wv); spray(wv, v.F, v.vx, 1, false); }
+    }
     if (v.mk) v.mk.style.left = `${clamp(v.s / track.finishS, 0, 1) * 100}%`;
   }
+  updateWaterFx(dt, player.mesh.root.position, player.s);
   // flags, chevrons, particles, fog (shared with ball mode)
   for (const geo of flagGeos) {
     const p = geo.attributes.position.array, b = geo.userData.base, ph = geo.userData.phase;
