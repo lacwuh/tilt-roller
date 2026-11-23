@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Tilt Roller" />
 <meta name="theme-color" content="#24124a" />
 <title>Tilt Roller</title>
-<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="style.css?v=21" />
 </head>
 <body>
 <canvas id="c"></canvas>
@@ -20,6 +20,10 @@
   <div id="prog"><div id="progFill"></div><span id="progFlag">🏁</span></div>
   <div id="tilt"><div id="tiltDot"></div></div>
   <div id="speed">0 km/h</div>
+  <div id="pad" class="hidden">
+    <button class="pb steer" data-k="L">&#9664;</button><button class="pb jump" data-k="J">JUMP</button>
+    <button class="pb jump r" data-k="J">JUMP</button><button class="pb steer r" data-k="R">&#9654;</button>
+  </div>
   <div id="kick"><span>KICK</span><div class="pip"><i></i></div><div class="pip"><i></i></div></div>
 </div>
 <div id="pops"></div>
@@ -27,7 +31,7 @@
 <div id="overlay">
   <div class="panel">
     <h1 id="ovTitle">TILT<br>ROLLER</h1>
-    <div id="ovBody">Tilt the phone or <b>hold the left / right side</b> of the screen to steer.<br><b>Tap the middle</b>, <b>swipe up</b> or <b>jiggle the phone</b> to jump.<br>Jump through the rings of fire, ride the loops, leap the pits, survive earthquakes and fog, and reach the flags! Speed keeps growing.<br><b>Truck race:</b> drift your monster truck against 5 rivals.</div>
+    <div id="ovBody">Steer by <b>tilting the phone</b> or with the <b>&#9664; &#9654; buttons</b>.<br>Jump with the <b>JUMP</b> buttons, one beside each thumb.<br>Jump the rings of fire and the pits, ride the loops and spirals, mind the storms and the water, and reach the flags!<br><b>Truck race:</b> drift, bump and knock 5 rivals off the track.</div>
     <button id="ovBtn">BALL RUN</button>
     <button id="ovBtn2" class="alt">TRUCK RACE</button>
     <label class="opt"><input type="checkbox" id="invert" /> invert tilt</label>
@@ -35,6 +39,6 @@
   </div>
 </div>
 <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }</script>
-<script type="module" src="game.js"></script>
+<script type="module" src="game.js?v=21"></script>
 </body>
 </html>

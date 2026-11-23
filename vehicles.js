@@ -17,11 +17,12 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const V3 = THREE.Vector3;
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const QROLL = new THREE.Quaternion(), ZAXIS = new THREE.Vector3(0, 0, 1);
 
 export const SPECS = {
   // half the original size; springs stiffened so the static sag stays in proportion
-  monster: { kind: 'monster', a: 0.85, b: 0.85, ht: 0.72, Rw: 0.48, ww: 0.42, L0: 0.48, k: 50, cd: 2.8, muF: 1.6, muR: 1.45, hcg: 0.65, Ip: 0.65, Ir: 0.35, Iz: 0.75, jumpV: 10.5, halfW: 0.95, halfL: 1.3 },
-  car:     { kind: 'car',     a: 0.72, b: 0.72, ht: 0.5, Rw: 0.23, ww: 0.21, L0: 0.18, k: 120, cd: 4.8, muF: 1.75, muR: 1.6, hcg: 0.25, Ip: 0.5, Ir: 0.2, Iz: 0.55, jumpV: 9.5, halfW: 0.63, halfL: 1.15 },
+  monster: { kind: 'monster', a: 0.85, b: 0.85, ht: 0.72, Rw: 0.48, ww: 0.42, L0: 0.48, k: 50, cd: 2.8, muF: 1.6, muR: 1.45, hcg: 0.65, Ip: 0.65, Ir: 0.35, Iz: 0.75, jumpV: 10.5, halfW: 0.95, halfL: 1.3, tall: 1.8 },
+  car:     { kind: 'car',     a: 0.72, b: 0.72, ht: 0.5, Rw: 0.23, ww: 0.21, L0: 0.18, k: 120, cd: 4.8, muF: 1.75, muR: 1.6, hcg: 0.25, Ip: 0.5, Ir: 0.2, Iz: 0.55, jumpV: 9.5, halfW: 0.63, halfL: 1.15, tall: 0.8 },
 };
 
 export class Vehicle {
@@ -45,10 +46,24 @@ export class Vehicle {
       z: this.z0, zd: 0, th: 0, thd: 0, ph: 0, phd: 0,
       ax: 0, ay: 0, driftI: 0, stun: 0, wetT: 0, inWater: 0, onWet: 0, contacts: 4, dead: false, fallT: 0, air: 0, drift: 0, alphaR: 0,
       finished: false, finishPlace: 0, finishTime: 0, jumpCD: 0,
+      aqua: 0, aquaN: 0, slip: 0, spinA: 0, spinDir: 1,          // aquaplaning and spin-outs
+      roll: 0, rollRate: 0, flipT: 0, flipCD: 0, tip: 0, overTop: false,    // roll-overs and leaving over the lip
+      event: null, deadSd: 0, deadXd: 0, deathS: s,
     });
     // wheels start at rest on the ground (before the first physics step runs)
     for (const w of this.wheels) { w.g = 0; w.ya = this.z0; w.F = this.ctx.G / 4; w.contact = true; }
   }
+
+  // roll over sideways (dir = +1 rolls toward +x) for T seconds: one full turn
+  tumble(dir, T) { this.flipT = T; this.rollRate = -dir * 2 * Math.PI / T; }
+  // tip over at the top of the wall and roll back down toward the middle of the road
+  startFlip(side) {
+    const t = this.trackVel();
+    this.setTrackVel(t.sd * 0.8, -side * 4.5);
+    this.tumble(-side, 0.9);
+    this.stun = Math.max(this.stun, 0.9); this.driftI = 0; this.tip = 0; this.flipCD = 4; this.event = 'flip';
+  }
+  startSpin(dir) { this.spinA = 2 * Math.PI; this.spinDir = dir || 1; this.slip = 0; this.driftI = 0; this.event = 'spin'; }
 
   // speed along the track and across it
   trackVel() {
@@ -63,13 +78,20 @@ export class Vehicle {
 
   step(dt, steer, jump, target, canDrift = true) {
     const ctx = this.ctx, tr = ctx.track(), sp = this.spec, G = ctx.G, HW = ctx.HW();
-    if (this.dead) { this.zd -= G * dt; this.z += this.zd * dt; this.fallT += dt; return; }
+    if (this.dead) {
+      this.zd -= G * dt; this.z += this.zd * dt; this.fallT += dt;
+      this.s = clamp(this.s + this.deadSd * dt, 0, tr.len - 1); this.x += this.deadXd * dt;
+      this.roll += this.rollRate * dt;
+      for (const w of this.wheels) { w.g = null; w.ya = this.z; }
+      return;
+    }
+    if (this.flipT > 0) { this.roll += this.rollRate * dt; this.flipT -= dt; if (this.flipT <= 0) { this.flipT = 0; this.roll = 0; this.rollRate = 0; } }
     if (this.stun > 0) this.stun -= dt;
     const F = ctx.frameAt(this.s, this.F);
     const sm = tr.smp[F.i];
     const cps = Math.cos(this.psi), sps = Math.sin(this.psi);
     const gT = -G * F.T.y, gB0 = -G * F.B.y, gU0 = -G * F.U.y;
-    const sd = this.vx * cps - this.vy * sps;
+    const sd = this.vx * cps - this.vy * sps, xd0 = -this.vx * sps - this.vy * cps;
     // the vehicle stands on the half-pipe surface: local up Uv is the surface normal at x
     const sfC = ctx.surfAt(this.x, sm);
     if (sfC) { this.surfTh = sfC.th; this.surfH = sfC.h; }
@@ -125,9 +147,19 @@ export class Vehicle {
     // water and wet road: wading drag in a ford; rain-soaked turns (and wet tyres just after a ford) have far less grip
     const wat = contacts ? (sm.water || 0) : 0;
     this.wetT = wat > 0 ? 1.5 : Math.max(0, this.wetT - dt);
+    // aquaplaning: at speed in standing water the tyres float. Grip goes, the heading wanders on its
+    // own, and steering or drifting in there builds up to a full spin
+    const aqua = wat > 0 ? clamp((Math.abs(sd) - 16) / 18, 0, 1) : 0;
+    this.aqua = aqua;
+    this.aquaN += -1.6 * this.aquaN * dt + (Math.random() - 0.5) * 4.5 * Math.sqrt(dt);   // slowly wandering push, about +-0.7
     const slick = sm.wet ? 1 : this.wetT > 0 ? 0.4 : 0;     // storm-soaked road is close to ice
     this.inWater = wat; this.onWet = contacts && sm.wet ? 1 : 0;
-    const wantDrift = canDrift && contacts >= 1 ? clamp((Math.abs(steer) - (0.45 - 0.15 * slick)) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
+    if (aqua > 0.2 && contacts && !this.spinA && !this.flipT) {
+      // gentle corrections are safe; real steering, drifting or a big slide angle build up to a spin
+      this.slip += aqua * (0.04 + 0.8 * Math.max(0, Math.abs(steer) - 0.25) + 2.2 * this.driftI + (Math.abs(this.psi) > 0.6 ? 1.2 : 0)) * dt;
+      if (this.slip > 1) this.startSpin(Math.sign(this.psi) || Math.sign(this.aquaN) || 1);
+    } else this.slip = Math.max(0, this.slip - 1.5 * dt);
+    const wantDrift = canDrift && contacts >= 1 && !this.spinA ? clamp((Math.abs(steer) - (0.45 - 0.15 * slick)) / 0.35, 0, 1) * clamp((this.vx - 10) / 10, 0, 1) : 0;
     this.driftI += (wantDrift - this.driftI) * (1 - Math.exp(-(wantDrift > this.driftI ? 10 : 3) * dt));
     const dI = this.driftI;
 
@@ -150,9 +182,10 @@ export class Vehicle {
       else if (over <= 0) Fx = Math.min(22, -over * 1.5);
       else Fx = gT > 1.5 ? 0 : -Math.min(5, over * 0.3);    // above cruise speed: coast (downhill: no braking at all)
     }
-    Fx = clamp(Fx, -sp.muR * Nr * 1.3, sp.muR * Nr * 1.3);
+    Fx = clamp(Fx, -sp.muR * Nr * 1.3, sp.muR * Nr * 1.3) * (1 - 0.75 * aqua);   // floating tyres cannot push either
     const dazed = this.stun > 0 ? 0.2 : 1;   // a rammed vehicle slides like on ice for a moment
-    const muF = sp.muF * dazed * (1 - 0.8 * slick), muR = sp.muR * (1 - 0.75 * dI) * dazed * (1 - 0.86 * slick);
+    const float = 1 - 0.96 * aqua;   // aquaplaning: the tyres barely touch, so the car slides on wherever its nose points
+    const muF = sp.muF * dazed * (1 - 0.8 * slick) * float, muR = sp.muR * (1 - 0.75 * dI) * dazed * (1 - 0.86 * slick) * float;
     const Fyf = clamp(-7 * Nf * af, -muF * Nf, muF * Nf);
     const rearCap = muR * Nr * Math.sqrt(Math.max(0.15, 1 - (Fx / (sp.muR * Nr * 1.3 + 1e-6)) ** 2));
     const Fyr = clamp(-7 * Nr * ar, -rearCap, rearCap);
@@ -170,11 +203,12 @@ export class Vehicle {
     const psiT = contacts ? -steer * (0.28 + 0.72 * dI) : 0;   // up to ~57 degrees sideways
     // rate 12/s with gain 3 gives a heading response of ~6 rad/s, critically damped
     const rWant = -F.kB * sd - (contacts ? 3 : 4) * (this.psi - psiT);
-    this.r += (rWant - this.r) * (1 - Math.exp(-(contacts ? 12 * (1 - 0.3 * dI) : 5) * dt));
+    this.r += (rWant - this.r) * (1 - Math.exp(-(contacts ? 12 * (1 - 0.3 * dI) * (1 - 0.8 * aqua) : 5) * dt));
+    if (aqua > 0) { this.r += this.aquaN * 2.6 * aqua * dt; this.vy += this.aquaN * 0.8 * aqua * dt; }   // the floating car wanders
     // in a drift the body swings out to the drift angle directly (arcade feel, beats tyre aligning torque)
-    if (dI > 0.05) this.psi += (psiT - this.psi) * (1 - Math.exp(-5 * dI * dt));
-    const psiMax = 0.75 + 0.45 * dI;
-    if (Math.abs(this.psi) > psiMax) { this.psi = Math.sign(this.psi) * psiMax; this.r *= 0.5; }
+    if (dI > 0.05 && !this.spinA) this.psi += (psiT - this.psi) * (1 - Math.exp(-5 * dI * dt));
+    const psiMax = 0.75 + 0.45 * dI + 0.4 * aqua;
+    if (!this.spinA && Math.abs(this.psi) > psiMax) { this.psi = Math.sign(this.psi) * psiMax; this.r *= 0.5; }
     if (this.vx < 8 && contacts) this.vx += 10 * dt;
     if (sm.minV && this.vx < sm.minV) this.vx = sm.minV;
     this.vx = clamp(this.vx, -10, 95);
@@ -182,12 +216,21 @@ export class Vehicle {
 
     // ---- integrate in track coordinates
     let tv = this.trackVel();
-    if (dI > 0.05) {
+    if (this.spinA > 0) {
+      // spinning out: the vehicle whirls through a full turn while sliding on along its old path, scrubbing speed
+      this.r = this.spinDir * 7.5;
+      tv = { sd: sd * (1 - 0.35 * dt), xd: xd0 * (1 - 1.0 * dt) };
+      this.psi += this.r * dt; this.spinA -= Math.abs(this.r) * dt;
+      if (this.spinA <= 0) { this.spinA = 0; this.psi = 0; this.r = 0; this.stun = Math.max(this.stun, 0.25); }
+      this.setTrackVel(tv.sd, tv.xd);
+      this.drift = 0.8;
+    } else if (dI > 0.05) {
       // drifting: the vehicle slides sideways but keeps travelling down the road
       // ...and keeps most of its speed through the slide
       const k = 1 - Math.exp(-14 * dI * dt);
       const out = clamp(-tv.sd * tv.sd * F.kB * (0.25 + 0.15 * slick), -8, 8);
-      this.setTrackVel(tv.sd + Math.max(0, target * 0.96 - tv.sd) * k, tv.xd + (steer * (7 - 1.5 * slick) + out - tv.xd) * k);
+      const xdT = (steer * (7 - 1.5 * slick) + out) * ct * ct - st * 10;   // on the wall the slope pulls the slide back down
+      this.setTrackVel(tv.sd + Math.max(0, target * 0.96 - tv.sd) * k, tv.xd + (xdT - tv.xd) * k);
       tv = this.trackVel();
     }
     if (!contacts) {
@@ -195,24 +238,42 @@ export class Vehicle {
       this.setTrackVel(tv.sd, tv.xd * Math.exp(-1.4 * dt) + steer * 10 * dt);
       tv = this.trackVel();
     }
-    this.psi += (this.r + F.kB * tv.sd) * dt;
-    this.s += tv.sd * dt; this.x += tv.xd * ct * dt;
+    if (!this.spinA) this.psi += (this.r + F.kB * tv.sd) * dt;
+    this.s += tv.sd * dt; this.x += tv.xd * (sfC ? ct : 1) * dt;     // past the lip there is no wall to climb
     if (contacts) this.air = 0;
 
-    // ---- walls (raised berm on the outside of curves)
-    const side = Math.sign(sm.berm);
-    const wall = side ? ctx.lipX(sm, side) - sp.halfW : 1e9;
-    if (Math.abs(sm.berm) > 0.3 && this.x * side > wall) {
-      this.x = side * wall;
-      const t2 = this.trackVel();
-      if (t2.xd * side > 0) { this.setTrackVel(t2.sd * 0.97, -t2.xd * 0.4); this.psi *= 0.6; this.r *= 0.4; this.hitWall = Math.abs(t2.xd); }
+    // ---- the lip of the half-pipe. Arrive slowly and the wall holds you; faster and the vehicle tips
+    // and rolls back down; faster still and it flies over the top and out. Riding high on a steep
+    // wall while sliding (drifting, dazed, on ice) also tips it over.
+    const side = this.x < 0 ? -1 : 1;
+    const lipHere = ctx.lipX(sm, side), edge = lipHere - sp.halfW * 0.5;
+    const nearSurface = this.z < this.z0 + 1.2;
+    if (this.x * side > edge && nearSurface && !this.overTop) {
+      const t2 = this.trackVel(), vOut = sm.noDetach ? 0 : t2.xd * side;   // inside a vertical loop the wall always holds
+      const banked = sm.berm * side > 0.3;                    // the tall outer wall of a banked turn
+      const overV = banked ? 11 : 6, flipV = banked ? 4.5 : 1.2;
+      if (vOut > overV) {
+        this.overTop = true; this.event = 'over';
+        this.x = side * (lipHere + 0.05);
+        this.zd += vOut * 0.7; this.setTrackVel(t2.sd, side * (4 + vOut * 0.3));
+        this.tumble(side, 0.7); this.flipT = 9;      // keeps tumbling all the way down
+      } else if (vOut > flipV && !this.flipT && this.flipCD <= 0) this.startFlip(side);
+      else { this.x = side * edge; if (vOut > 0) { this.setTrackVel(t2.sd * 0.97, -t2.xd * 0.4); this.psi *= 0.6; this.r *= 0.4; } }
     }
+    const sliding = this.stun > 0 || dI > 0.4 || slick >= 1 || Math.abs(this.psi) > 0.45;
+    this.flipCD -= dt;
+    if (Math.abs(thC) > 1.0 && contacts && !this.flipT && this.flipCD <= 0 && !this.spinA && !this.overTop && Math.abs(sd) > 18 && sliding) {
+      this.tip += dt; if (this.tip > 0.35) this.startFlip(side);
+    } else this.tip = Math.max(0, this.tip - dt);
 
     // ---- falling: off the edge, or down into a gap
     const smN = tr.smp[ctx.frameAt(this.s, this.F).i];
     const lip = ctx.lipX(smN, this.x < 0 ? -1 : 1);
     if ((!smN.solid && this.z < -2) || (Math.abs(this.x) > lip + 0.3 && this.z < -0.5) || this.z < -8) {
-      this.dead = true; this.fallT = 0;
+      const td = this.trackVel();
+      this.dead = true; this.fallT = 0; this.deathS = this.s;
+      this.deadSd = td.sd; this.deadXd = td.xd;                                  // carry on along the last path
+      if (!this.flipT) this.rollRate = (td.xd >= 0 ? -1 : 1) * 4;               // and tumble on the way down
     }
     if (this.s >= tr.len - 1) { this.s = tr.len - 1; this.vx = 0; }
   }
@@ -257,6 +318,10 @@ export class Vehicle {
     m.blob.visible = !this.dead && this.ctx.track().smp[F.i].solid;
     m.blob.material.opacity = clamp(0.85 - hgt * 0.05, 0.2, 0.85);
     m.blob.scale.setScalar(1 + hgt * 0.04);
+    if (this.roll) {
+      m.root.quaternion.multiply(QROLL.setFromAxisAngle(ZAXIS, this.roll));
+      m.root.position.addScaledVector(Uv, sp.tall * (1 - Math.cos(this.roll)) / 2 + sp.halfW * 0.6 * Math.abs(Math.sin(this.roll)));
+    }
   }
 
   wheelWorld(i, out) {

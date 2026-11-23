@@ -64,3 +64,15 @@ button.alt:active { box-shadow: 0 2px 0 #1d4fa8; }
 #kick .pip { position: relative; width: 16px; height: 26px; border-radius: 5px; background: #0006; border: 2px solid #ffffff55; overflow: hidden; }
 #kick .pip i { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: linear-gradient(180deg, #7ae7ff, #3b8cff); }
 #kick .pip.ready { border-color: #fff; box-shadow: 0 0 8px #7ae7ff; }
+#pad .pb { position: absolute; bottom: calc(env(safe-area-inset-bottom) + 14px); border-radius: 50%; border: 2px solid #ffffff77; background: #ffffff26;
+  color: #fff; font-weight: 900; padding: 0; box-shadow: none; pointer-events: auto; touch-action: none; -webkit-tap-highlight-color: transparent;
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); text-shadow: 0 2px 0 #0006; }
+#pad .steer { width: min(22vw, 96px); height: min(22vw, 96px); font-size: 30px; left: 12px; }
+#pad .steer.r { left: auto; right: 12px; }
+#pad .jump { width: min(19vw, 84px); height: min(19vw, 84px); font-size: 13px; letter-spacing: 1px; left: calc(20px + min(22vw, 96px)); bottom: calc(env(safe-area-inset-bottom) + 40px);
+  background: #3b8cff66; border-color: #7ae7ff; }
+#pad .jump.r { left: auto; right: calc(20px + min(22vw, 96px)); }
+#pad .pb.on { background: #ffffff66; transform: scale(0.93); box-shadow: none; }
+#pad .jump.empty { opacity: .35; }
+body.touch #kick, body.touch #speed { bottom: calc(env(safe-area-inset-bottom) + min(22vw, 96px) + 52px); }
+body.touch #tilt { bottom: calc(env(safe-area-inset-bottom) + min(22vw, 96px) + 60px); }

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Vehicle, SPECS, makeTyreTexture } from './vehicles.js';
+import { Vehicle, SPECS, makeTyreTexture } from './vehicles.js?v=21';
 
 // ============================================================================
 // Tilt Roller: a ball rolls along a procedurally generated 3D track.
@@ -145,7 +145,7 @@ function generateTrack(seed, level, race = false) {
     const A = 5 * DEG, p0 = p, i0 = smp.length - 1;
     run(28, t => ({ p: p0 - A * Math.sin(Math.PI * t), kind: K.WATER }));
     const iA = smp.length - 1;
-    run(R(26, 36), () => ({ kind: K.WATER }));
+    run(R(95, 150), () => ({ kind: K.WATER }));
     const iB = smp.length - 1;
     run(28, t => ({ p: p0 + A * Math.sin(Math.PI * t), kind: K.WATER }));
     p = p0;
@@ -289,7 +289,7 @@ function generateTrack(seed, level, race = false) {
 
   straight(race ? 75 : 30, { kind: K.START }); cp();
   const kicker = () => { straight(35); jump(true); };
-  const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, mountain, mountain, valley, valley, kicker, kicker, climb, twistHill, twistHill, descent, descent, () => downhill(R(12, 22) * DEG, R(50, 80))];
+  const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, mountain, mountain, valley, valley, kicker, kicker, climb, twistHill, twistHill, descent, descent, ford, () => downhill(R(12, 22) * DEG, R(50, 80))];
   const specials = race ? ['vloop', 'helix', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper', 'ford'] : ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'jump', 'pit', 'pit', 'sweeper', 'ford'];
   for (let i = 0; i < Math.min(level - 1, 8); i++) specials.push(pick(race ? ['jump', 'vloop', 'helix', 'jump', 'pit'] : ['ring', 'jump', 'vloop', 'helix', 'ring', 'jump', 'pit', 'pit']));
   for (let i = specials.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [specials[i], specials[j]] = [specials[j], specials[i]]; }
@@ -1144,6 +1144,21 @@ canvas.addEventListener('touchmove', e => {
 const endTouch = e => { for (const t of e.changedTouches) touches.delete(t.identifier); };
 canvas.addEventListener('touchend', endTouch); canvas.addEventListener('touchcancel', endTouch);
 // a quick tap nudges, holding ramps up to full lock over ~half a second
+// on-screen buttons (phones): steer left/right in the bottom corners, a JUMP button beside each
+const pad = { L: 0, R: 0 };   // press time of each steering button, 0 = released
+const padEl = document.getElementById('pad');
+const IS_TOUCH = 'ontouchstart' in window || params.has('pad');
+if (IS_TOUCH) { padEl.classList.remove('hidden'); document.body.classList.add('touch'); }
+for (const b of padEl.querySelectorAll('.pb')) {
+  const k = b.dataset.k;
+  const down = e => { e.preventDefault(); b.classList.add('on'); if (k === 'J') { input.jumpBuf = 0.15; input.jumpPow = 1; } else pad[k] = performance.now(); };
+  const up = e => { e.preventDefault(); b.classList.remove('on'); if (k !== 'J') pad[k] = 0; };
+  b.addEventListener('touchstart', down, { passive: false });
+  b.addEventListener('touchend', up, { passive: false }); b.addEventListener('touchcancel', up, { passive: false });
+  b.addEventListener('mousedown', down); b.addEventListener('mouseup', up); b.addEventListener('mouseleave', up);
+}
+// like the keys: a tap nudges, holding ramps up to full lock over ~half a second
+function padSteer() { const now = performance.now(), ramp = t => Math.min(1, 0.3 + (now - t) / 500); return (pad.R ? ramp(pad.R) : 0) - (pad.L ? ramp(pad.L) : 0); }
 function touchSteer() { const now = performance.now(); let v = 0; for (const d of touches.values()) if (!d.swiped) v += d.zone * Math.min(1, 0.3 + (now - d.t0) / 500); return clamp(v, -1, 1); }
 canvas.addEventListener('mousedown', () => { input.jumpBuf = 0.15; });
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
@@ -1153,7 +1168,7 @@ function readInput(dt) {
   let target = 0, rollT = 0;
   if (state.mode === 'demo') target = autopilot();
   else if (input.keyL || input.keyR) target = keySteer();
-  else if (touchSteer() !== 0) target = touchSteer();
+  else if (touchSteer() !== 0 || padSteer() !== 0) target = clamp(touchSteer() + padSteer(), -1, 1);
   else if (tilt.rd !== null) {
     const ang = Math.asin(clamp(tilt.rd, -1, 1)) / DEG;
     if (tilt.needNeutral) { tilt.neutral = clamp(ang, -10, 10); tilt.needNeutral = false; }
@@ -1223,10 +1238,11 @@ function groundStep(dt) {
   if (!state.finished && sm.minV && ball.v < sm.minV) ball.v = sm.minV;
   ball.v = clamp(ball.v, state.finished ? 0 : 6, 95);
 
+  ball.aquaN = (ball.aquaN || 0) * (1 - 1.6 * dt) + (Math.random() - 0.5) * 4.5 * Math.sqrt(dt);   // wandering push while aquaplaning
   const sf = surfOrFlat(ball.x, sm), th = sf.th, ct = Math.cos(th), st = Math.sin(th);
   const onWall = Math.abs(th) > 0.05;
   // wet road: half the steering bite and almost no sideways friction, so the ball skates wide
-  const aT = (gB + input.steer * STEER_ACC * (sm.wet ? 0.3 : 1) - ball.v * ball.v * f.kB + weather.quakeLat) * ct + gU * st - ball.vx * (onWall ? 0.5 : sm.wet ? 0.3 : 2.2);
+  const aT = (gB + input.steer * STEER_ACC * (sm.wet ? 0.3 : sm.water > 0 ? 0.45 : 1) + (sm.water > 0 ? ball.aquaN * 9 : 0) - ball.v * ball.v * f.kB + weather.quakeLat) * ct + gU * st - ball.vx * (onWall ? 0.5 : sm.wet ? 0.3 : sm.water > 0 ? 0.4 : 2.2);
   ball.vx += aT * dt; ball.x += ball.vx * ct * dt;
   // the outside of a banked curve is a full wall up to the lip
   const side = ball.x < 0 ? -1 : 1;
@@ -1635,7 +1651,7 @@ const RIVALS = [
   { name: 'Ghost', spec: 'car', color: '#e8e8f0' },
 ];
 let vehicles = [], player = null;
-const race = { t: 0, order: [], driftAcc: 0, driftT: 0, driftHold: 0, turboT: 0, lastAir: 0, rank: 1 };
+const race = { events: {}, t: 0, order: [], driftAcc: 0, driftT: 0, driftHold: 0, turboT: 0, lastAir: 0, rank: 1 };
 
 function setupRace() {
   for (const v of vehicles) scene.remove(v.mesh.root, v.mesh.blob);
@@ -1649,6 +1665,7 @@ function setupRace() {
     v.ai.lane = v.x;
     scene.add(v.mesh.root, v.mesh.blob);
   });
+  race.events = {};
   race.t = 0; race.order = []; race.driftAcc = 0; race.driftT = 0; race.lastAir = 0; race.rank = 5;
   renderProgMarkers();
 }
@@ -1704,6 +1721,7 @@ function aiControl(v, dt, tv0) {
     }
     if (best) want = Math.sign(best.x - v.x);
   }
+  if (sm.water > 0) want *= 0.3;                                    // experienced drivers keep the wheel still in water
   ai.steer += (want - ai.steer) * (1 - Math.exp(-8 * dt));
   const steer = ai.steer;
 
@@ -1721,7 +1739,8 @@ function aiControl(v, dt, tv0) {
   if (v.finished) target = 10;
   else if (v.isPlayer) target = tv0 * playerCatchUp();
   else target = tv0 * ai.skill * clamp(1 + (player.s - v.s) * 0.007, 0.74, 1.38);   // behind the player: faster; ahead: easing off
-  if (sm.wet) target *= 0.88;                                                        // drivers lift in the storm
+  if (sm.water > 0) target *= 0.86;
+  if (sm.wet) target *= 0.82;                                                        // drivers lift in the storm
   return { steer, jump, target };
 }
 
@@ -1769,6 +1788,7 @@ function collideVehicles() {
         const away = vic === b ? sg : -sg, tvc = vic.trackVel(), tag = agg.trackVel();
         vic.setTrackVel(tvc.sd * 0.97, away * Math.max(Math.abs(tvc.xd), Math.min(30, 9 + closingAll * 2.2)));
         vic.zd += 2.5; vic.r += away * -1.5; vic.stun = 1.3; vic.hitBy = agg; vic.hitT = race.t;
+        if (!vic.flipT) vic.tumble(away, 0.8);
         agg.setTrackVel(tag.sd, tag.xd * 0.4);
         hard = Math.max(hard, closingAll * 2.5);
         race.airHits = (race.airHits || 0) + 1;
@@ -1815,7 +1835,8 @@ function collideVehicles() {
 
 function respawnVehicle(v) {
   let best = track.checkpoints[0];
-  for (const c of track.checkpoints) if (c * DS <= v.s - 4) best = c;
+  const sDead = v.deathS ?? v.s;
+  for (const c of track.checkpoints) if (c * DS <= sDead - 4) best = c;
   const lim = HW - v.spec.halfW - 0.6;
   const wasFinished = v.finished, place = v.finishPlace, ft = v.finishTime;
   v.reset(best * DS + 1, clamp(v.ai.lane, -lim, lim), targetV() * 0.6);
@@ -1845,6 +1866,12 @@ function raceLogic(dt) {
     if (v.dead && v.fallT > 1.3) { respawnVehicle(v); v.takedownDone = false; v.hitBy = null; }
   }
   for (const v of vehicles) {
+    if (v.event) {
+      const ev = v.event; v.event = null;
+      race.events[ev] = (race.events[ev] || 0) + 1;
+      if (v.isPlayer) { popup(ev === 'spin' ? 'SPIN OUT!' : ev === 'flip' ? 'ROLLED!' : 'OVER THE TOP!', 'bad'); if (ev === 'spin') noise(0.7, 1800, 0.3, 'bandpass'); else sfx.land(22); }
+      else if (ev === 'flip' && v.hitBy === player && race.t - v.hitT < 3) { const pts = 200 * state.level; state.score += pts; popup(`ROLLED HIM! +${pts}`, 'good'); }
+    }
     const wNow = v.inWater > 0 && !v.dead;
     if (wNow && !v.wasInWater && Math.abs(v.s - player.s) < 160) {
       splashBurst(v.mesh.root.position.clone(), v.F.U, 40, 8);
@@ -1932,7 +1959,7 @@ function beginLevel() {
   if (raceMode) setupRace(); else clearRace();
   ballMesh.visible = !raceMode; blob.visible = !raceMode;
   document.body.classList.toggle('race', raceMode);
-  document.getElementById('zones').classList.toggle('hidden', !('ontouchstart' in window));
+  document.getElementById('zones').classList.add('hidden');   // replaced by the on-screen buttons
   state.mode = 'count'; state.countT = 3; state.lastCount = -1;
   overlay.classList.add('hidden'); hud.classList.remove('hidden');
 }
@@ -2153,13 +2180,14 @@ function updateVisuals(dt, gdt = dt) {
 }
 
 const elProgWrap = document.getElementById('prog');
-const kickPips = [...document.querySelectorAll('#kick .pip i')];
+const kickPips = [...document.querySelectorAll('#kick .pip i')], jumpBtns = [...document.querySelectorAll('#pad .jump')];
 function drawKick() {
   kickPips.forEach((el, i) => {
     const f = clamp(kick.charge - i, 0, 1);
     el.style.height = `${f * 100}%`;
     el.parentElement.classList.toggle('ready', f >= 1);
   });
+  for (const b of jumpBtns) b.classList.toggle('empty', kick.charge < 1);
 }
 function renderProgMarkers() {
   elProgWrap.querySelectorAll('.mk').forEach(e => e.remove());
