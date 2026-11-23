@@ -152,15 +152,17 @@ function generateTrack(seed, level, race = false) {
     features.push({ type: 'ford', i0, i1: smp.length - 1, iMid: (iA + iB) >> 1, s0: iA * DS, s1: iB * DS, side: rnd() < 0.5 ? -1 : 1 });
     straight(30); cp();
   }
+  // 0 -> 1 with a constant gradient and short eased ends
+  const rampEase = t => { const a = 0.08; return t < a ? t * t / (2 * a * (1 - a)) : t > 1 - a ? 1 - (1 - t) * (1 - t) / (2 * a * (1 - a)) : (t - a / 2) / (1 - a); };
   // long sweeping spiral, one or two full turns, climbing or descending: made for holding a drift
   function sweeper() {
     cp();
-    const Rs = R(58, 76), turns = rnd() < 0.25 ? 2 : 1, d = h > 15 * DEG ? -1 : h < -15 * DEG ? 1 : rnd() < 0.5 ? -1 : 1;
-    const rise = (rnd() < 0.5 ? -1 : 1) * 16 * turns;
+    const Rs = R(50, 64), turns = rnd() < 0.4 ? 2 : 1, d = h > 15 * DEG ? -1 : h < -15 * DEG ? 1 : rnd() < 0.5 ? -1 : 1;
+    const rise = (rnd() < 0.5 ? -1 : 1) * R(30, 38) * turns;   // 30-38 up or down per full turn
     const L = 2 * Math.PI * Rs * turns, h0 = h, b0 = d * 14 * DEG;
     const s0 = len(), wet = rnd() < 0.3; let prev = 0;
     run(L, t => {
-      const sm = smooth(t); const off = new V3(0, rise * (sm - prev), 0); prev = sm;
+      const sm = rampEase(t); const off = new V3(0, rise * (sm - prev), 0); prev = sm;
       const e = smooth(Math.min(1, t / 0.05, (1 - t) / 0.05));
       return { h: h0 + d * 2 * Math.PI * turns * t, off, bank: b0 * e, berm: d, kind: K.HELIX, wet: wet ? 1 : 0 };
     });
@@ -268,15 +270,15 @@ function generateTrack(seed, level, race = false) {
     straight(30); cp();
   }
 
-  // horizontal 360: a descending banked spiral that passes under its own entry
+  // horizontal 360: a tight banked spiral that dives under (or climbs over) its own entry
   function helix() {
     cp(); booster(24, vt + 4, vt - 2);
     const Rh = R(36, 42), d = h > 15 * DEG ? -1 : h < -15 * DEG ? 1 : rnd() < 0.5 ? -1 : 1;
-    const L = 2 * Math.PI * Rh, h0 = h, rise = -11;
+    const L = 2 * Math.PI * Rh, h0 = h, rise = (rnd() < 0.5 ? -1 : 1) * R(22, 28);
     const b0 = d * Math.min(36 * DEG, Math.atan(vt * vt / (Rh * G)));
     const s0 = len(); let prev = 0;
     run(L, t => {
-      const sm = smooth(t); const off = new V3(0, rise * (sm - prev), 0); prev = sm;
+      const sm = rampEase(t); const off = new V3(0, rise * (sm - prev), 0); prev = sm;
       const e = smooth(Math.min(1, t / 0.08, (1 - t) / 0.08));
       return { h: h0 + d * 2 * Math.PI * t, off, bank: b0 * e, berm: d, minV: 20, kind: K.HELIX };
     });
@@ -621,6 +623,103 @@ function checker(x, w, h, n, m) {
 }
 const basis = (x, y, z) => new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
 
+// ============================================================================
+// Clouds: clusters of soft camera-facing puffs. Each puff is one quad whose edge is eroded
+// by tiling fractal noise and which is shaded lighter towards the world's "up"; overlapping
+// puffs blend into a billowy, volumetric-looking cloud for the cost of a few sprites.
+// ============================================================================
+function makeNoiseTexture(N = 128) {
+  const rnd = mulberry32(90210), data = new Uint8Array(N * N * 4);
+  const octs = [4, 8, 16, 32].map(gr => { const a = new Float32Array(gr * gr); for (let i = 0; i < a.length; i++) a[i] = rnd(); return { gr, a }; });
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let v = 0, amp = 0.5, tot = 0;
+    for (const { gr, a } of octs) {
+      const fx = x / N * gr, fy = y / N * gr, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = smooth(fx - x0), ty = smooth(fy - y0);
+      const x1 = (x0 + 1) % gr, y1 = (y0 + 1) % gr;   // wraps, so the texture tiles
+      v += lerp(lerp(a[y0 * gr + x0], a[y0 * gr + x1], tx), lerp(a[y1 * gr + x0], a[y1 * gr + x1], tx), ty) * amp;
+      tot += amp; amp *= 0.5;
+    }
+    const k = (y * N + x) * 4;
+    data[k] = data[k + 1] = data[k + 2] = Math.round(v / tot * 255); data[k + 3] = 255;
+  }
+  const t = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = t.minFilter = THREE.LinearFilter; t.needsUpdate = true;
+  return t;
+}
+const cloudUniforms = {
+  uNoise: { value: makeNoiseTexture() }, uTime: { value: 0 },
+  uLight: { value: new THREE.Color('#fff6ee') }, uShade: { value: new THREE.Color('#a886c4') },
+  uRainLight: { value: new THREE.Color('#8f96b8') }, uRainShade: { value: new THREE.Color('#2e3158') },
+  uFogColor: { value: new THREE.Color() }, uFogNear: { value: 160 }, uFogFar: { value: 700 },
+};
+const CLOUD_VS = `attribute vec3 aCenter; attribute vec4 aParams;   // params: size, seed, tone, rain
+  varying vec2 vUv; varying vec4 vP; varying float vDepth; varying vec2 vUp;
+  void main(){
+    vUv = uv; vP = aParams;
+    vec4 mv = modelViewMatrix * vec4(aCenter, 1.0);
+    mv.xy += position.xy * aParams.x;
+    vDepth = -mv.z;
+    vUp = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xy + vec2(0.0, 1e-4));   // world up on screen
+    gl_Position = projectionMatrix * mv;
+  }`;
+const CLOUD_FS = `uniform sampler2D uNoise; uniform float uTime, uFogNear, uFogFar;
+  uniform vec3 uLight, uShade, uRainLight, uRainShade, uFogColor;
+  varying vec2 vUv; varying vec4 vP; varying float vDepth; varying vec2 vUp;
+  void main(){
+    vec2 p = vUv - 0.5;
+    float d = 1.0 - length(p) * 2.0;
+    if (d <= 0.0) discard;
+    vec2 q = vUv * 0.55 + vP.y * vec2(0.37, 0.61);
+    float n = texture2D(uNoise, q + vec2(uTime * 0.005, 0.0)).r * 0.6 + texture2D(uNoise, q * 2.7 - vec2(0.0, uTime * 0.01)).r * 0.4;
+    float a = smoothstep(0.05, 0.5, d * 1.1 + (n - 0.5) * 1.9) * smoothstep(0.0, 0.18, d);   // noise carves lumps into the outline
+    a *= smoothstep(2.0, 16.0, vDepth);                                                  // fade when the camera flies through
+    if (a < 0.01) discard;
+    float lit = clamp(0.5 + dot(p, vUp) * 1.1 + (n - 0.5) * 0.7, 0.0, 1.0);             // lighter on top, darker in the folds
+    vec3 c = mix(mix(uShade, uLight, lit), mix(uRainShade, uRainLight, lit), vP.w) * vP.z;
+    c = mix(c, uFogColor, smoothstep(uFogNear, uFogFar, vDepth) * 0.85);
+    gl_FragColor = vec4(c, a * 0.92);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }`;
+let cloudFx = null;
+function buildClouds(list) {
+  const n = list.length, geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  const centers = new Float32Array(n * 3), params = new Float32Array(n * 4);
+  const aC = new THREE.InstancedBufferAttribute(centers, 3).setUsage(THREE.DynamicDrawUsage);
+  const aP = new THREE.InstancedBufferAttribute(params, 4).setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('aCenter', aC); geo.setAttribute('aParams', aP);
+  geo.instanceCount = n;
+  const mat = new THREE.ShaderMaterial({ uniforms: cloudUniforms, vertexShader: CLOUD_VS, fragmentShader: CLOUD_FS, transparent: true, depthWrite: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false; mesh.renderOrder = -0.5;
+  cloudFx = { mesh, list, centers, params, aC, aP, tick: 0, order: list.map((_, i) => i), dist: new Float32Array(n) };
+  sortClouds(true);
+  return mesh;
+}
+// transparent puffs must be drawn far-to-near; re-sorting every few frames is plenty
+function sortClouds(force) {
+  const c = cloudFx; if (!c) return;
+  if (!force && (c.tick++ % 20) !== 0) return;
+  const cp = camera.position, L = c.list;
+  for (let i = 0; i < L.length; i++) { const p = L[i]; c.dist[i] = (p[0] - cp.x) ** 2 + (p[1] - cp.y) ** 2 + (p[2] - cp.z) ** 2; }
+  c.order.sort((a, b) => c.dist[b] - c.dist[a]);
+  for (let k = 0; k < L.length; k++) {
+    const p = L[c.order[k]];
+    c.centers[k * 3] = p[0]; c.centers[k * 3 + 1] = p[1]; c.centers[k * 3 + 2] = p[2];
+    c.params[k * 4] = p[3]; c.params[k * 4 + 1] = p[4]; c.params[k * 4 + 2] = p[5]; c.params[k * 4 + 3] = p[6];
+  }
+  c.aC.needsUpdate = true; c.aP.needsUpdate = true;
+}
+function updateClouds(dt) {
+  cloudUniforms.uTime.value += dt;
+  cloudUniforms.uFogColor.value.copy(scene.fog.color);
+  cloudUniforms.uFogNear.value = scene.fog.near; cloudUniforms.uFogFar.value = scene.fog.far;
+  sortClouds(false);
+}
+
 let flagGeos = [];
 let waterTex = [];   // animated water textures of the current world
 let chevMats = [];
@@ -743,7 +842,7 @@ function buildWorld(tr) {
     t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
   };
   const rainPuffs = [];
-  const puffCluster = (c, n, size) => { for (let k = 0; k < n; k++) rainPuffs.push([c.x + (Math.random() - 0.5) * size * 2.2, c.y + (Math.random() - 0.5) * size * 0.5, c.z + (Math.random() - 0.5) * size * 2.2, size * (0.7 + Math.random() * 0.6)]); };
+  const puffCluster = (c, n, size) => { for (let k = 0; k < n; k++) rainPuffs.push([c.x + (Math.random() - 0.5) * size * 3.6, c.y + (Math.random() - 0.5) * size * 0.6, c.z + (Math.random() - 0.5) * size * 3.6, size * (0.6 + Math.random() * 0.8)]); };
   const UP = new V3(0, 1, 0);
   for (const f of tr.features) if (f.type === 'ford') {
     // the pool: a level sheet whose edge follows the shoreline on the half-pipe walls
@@ -799,13 +898,6 @@ function buildWorld(tr) {
     geo.setIndex(idx); geo.computeVertexNormals();
     const film = new THREE.Mesh(geo, sheenMat); film.renderOrder = 1; g.add(film);
   }
-  if (rainPuffs.length) {
-    const rc = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 2), new THREE.MeshStandardMaterial({ color: '#737a9c', roughness: 1, emissive: '#2a2f55', emissiveIntensity: 0.3 }), rainPuffs.length);
-    const mm = new THREE.Matrix4(), q1 = new THREE.Quaternion();
-    rainPuffs.forEach((pf, k) => { mm.compose(new V3(pf[0], pf[1], pf[2]), q1, new V3(pf[3], pf[3] * 0.55, pf[3])); rc.setMatrixAt(k, mm); });
-    g.add(rc);
-  }
-
   // ---- pillars down to the ground
   const groundY = tr.minY - 80;
   const noPil = [];
@@ -831,23 +923,25 @@ function buildWorld(tr) {
   ground.rotation.x = -Math.PI / 2; ground.position.set(tr.P[tr.N >> 1].x, groundY, tr.P[tr.N >> 1].z);
   g.add(ground);
 
-  // ---- clouds
+  // ---- clouds: each is a cluster of soft puffs [x, y, z, size, seed, tone, rain]
   const rnd = mulberry32(tr.seed ^ 0x9e3779b9);
   const puffs = [];
   for (let c = 0; c < 70; c++) {
     const i = Math.floor(rnd() * tr.N), base = tr.P[i];
-    const side = rnd() < 0.5 ? -1 : 1, dist = 45 + rnd() * 220;
+    const side = rnd() < 0.5 ? -1 : 1, dist = 55 + rnd() * 230;
     const lat = new V3(tr.T[i].z, 0, -tr.T[i].x).normalize().multiplyScalar(side * dist);
-    const cen = base.clone().add(lat); cen.y += -50 + rnd() * 70;
+    const cen = base.clone().add(lat); cen.y += -55 + rnd() * 80;
     let ok = true;
-    for (let k = 0; k < tr.N; k += 20) if (tr.P[k].distanceToSquared(cen) < 36 * 36) { ok = false; break; }
+    for (let k = 0; k < tr.N; k += 20) if (tr.P[k].distanceToSquared(cen) < 46 * 46) { ok = false; break; }
     if (!ok) continue;
-    const np = 3 + Math.floor(rnd() * 4);
-    for (let k = 0; k < np; k++) puffs.push([cen.x + (rnd() - 0.5) * 22, cen.y + (rnd() - 0.5) * 5, cen.z + (rnd() - 0.5) * 22, 5 + rnd() * 8]);
+    const sc = 0.8 + rnd() * 0.9, tone = 0.94 + rnd() * 0.1;
+    const nb = 4 + Math.floor(rnd() * 3), nt = 2 + Math.floor(rnd() * 3);
+    // a wide flat base of big puffs with smaller ones heaped on top
+    for (let k = 0; k < nb; k++) puffs.push([cen.x + (rnd() - 0.5) * 34 * sc, cen.y + (rnd() - 0.5) * 3 * sc, cen.z + (rnd() - 0.5) * 34 * sc, (17 + rnd() * 11) * sc, rnd() * 10, tone, 0]);
+    for (let k = 0; k < nt; k++) puffs.push([cen.x + (rnd() - 0.5) * 13 * sc, cen.y + (4 + rnd() * 5) * sc, cen.z + (rnd() - 0.5) * 13 * sc, (11 + rnd() * 6) * sc, rnd() * 10, tone * 1.04, 0]);
   }
-  const cloud = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 3), new THREE.MeshStandardMaterial({ color: '#fff4f0', roughness: 1, emissive: '#5a3a6a', emissiveIntensity: 0.25 }), Math.max(1, puffs.length));
-  puffs.forEach((pf, k) => { m4.compose(new V3(pf[0], pf[1], pf[2]), one, new V3(pf[3], pf[3] * 0.6, pf[3])); cloud.setMatrixAt(k, m4); });
-  cloud.count = puffs.length; g.add(cloud);
+  for (const pf of rainPuffs) puffs.push([pf[0], pf[1], pf[2], pf[3] * 3.4, Math.random() * 10, 1, 1]);
+  g.add(buildClouds(puffs));
 
   return g;
 }
@@ -1415,6 +1509,7 @@ function spray(at, fr, speed, n, big) {
   }
 }
 function updateWaterFx(dt, focus, focusS) {
+  updateClouds(dt);
   for (const w of waterTex) { w.tex.offset.x -= w.vx * dt; w.tex.offset.y += w.vy * dt; }
   const i = clamp(Math.round(focusS / DS), 0, track.N - 1);
   // rain over wet turns
@@ -2036,7 +2131,7 @@ startDemo();
 onResize();
 requestAnimationFrame(frame);
 window.__game = {
-  state, ball, get track() { return track; }, weather, input, camera, race, get vehicles() { return vehicles; }, startGame,
+  state, ball, get track() { return track; }, weather, input, camera, race, get vehicles() { return vehicles; }, get clouds() { return cloudFx; }, startGame,
   // headless test hook: advance the simulation without rendering
   sim(seconds, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) {
