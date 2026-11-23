@@ -13,7 +13,9 @@ const G = 30;            // gravity
 const BALL_R = 0.6;
 const HW = 4;            // half width of the road
 const DEG = Math.PI / 180;
-const JUMP_V = 13;
+const JUMP_V = 17;
+const BOUNCE_E = 0.42, BOUNCE_MIN = 9;
+const TIME_SCALE = 1.45; // game time runs faster than real time: snappier rolling, falling and jumping
 const STEER_ACC = 26;
 const K = { NORMAL: 0, BOOST: 1, KICK: 2, LOOP: 3, HELIX: 4, FINISH: 5, START: 6, RING: 7 };
 
@@ -42,7 +44,7 @@ function generateTrack(seed, level) {
   const rnd = mulberry32(seed);
   const R = (a, b) => a + (b - a) * rnd();
   const pick = a => a[Math.floor(rnd() * a.length)];
-  const vt = Math.min(33 + level * 1.5, 44);
+  const vt = Math.min(38 + level * 2, 56);
   const smp = [], features = [], checkpoints = [];
   const pos = new V3(); let h = 0, p = 0;
   const dir = new V3();
@@ -82,11 +84,11 @@ function generateTrack(seed, level) {
     const d = chooseDir();
     let a = R(35, 75) * DEG;
     a = Math.max(15 * DEG, Math.min(a, 65 * DEG - d * h));
-    curve(d * a, R(55, 85));
+    curve(d * a, R(75, 115));
   }
   function scurve() {
     if (Math.abs(h) > 20 * DEG) return turn();
-    const d = chooseDir(), a = R(30, 50) * DEG, r = R(50, 70);
+    const d = chooseDir(), a = R(30, 50) * DEG, r = R(70, 95);
     curve(d * a, r); curve(-d * a, r);
   }
   function hill(A, L) { const p0 = p; run(L, t => ({ p: p0 + A * Math.sin(2 * Math.PI * t) })); p = p0; }
@@ -114,7 +116,7 @@ function generateTrack(seed, level) {
     const d = chooseDir();
     let a = R(40, 80) * DEG;
     a = Math.max(15 * DEG, Math.min(a, 65 * DEG - d * h));
-    curve(d * a, R(60, 85), R(8, 14) * DEG * (rnd() < 0.5 ? 1 : -1));
+    curve(d * a, R(80, 115), R(8, 14) * DEG * (rnd() < 0.5 ? 1 : -1));
   }
   // off-camber straight: the road leans sideways with no wall, the player must tilt against it
   function camber() {
@@ -124,26 +126,28 @@ function generateTrack(seed, level) {
   }
   function booster(L, bv, mv) { run(L, t => ({ kind: K.BOOST, boost: bv, minV: t > 0.75 ? mv : 0 })); }
 
-  function jump() {
-    const th = (15 + Math.min(level, 5)) * DEG;
-    const Lg = 16 + Math.min(level, 6) * 1.5;
+  function jump(mini = false) {
+    const th = (mini ? 13 : 16 + Math.min(level, 5)) * DEG;
+    const vexp = vt + 2;
+    const Lg = mini ? R(8, 14) : clamp(0.55 * vexp * vexp * Math.sin(2 * th) / G, 16, 42);
     const vreq = Math.sqrt(Lg * G / Math.sin(2 * th));
     const bv = Math.max(vreq + 5, vt + 3);
-    cp(); booster(26, bv, vreq + 1.5);
+    cp();
+    if (!mini) booster(26, bv, vreq + 1.5);
     const p0 = p;
-    run(14, t => ({ p: p0 + th * smooth(t), kind: K.KICK }));
+    run(mini ? 10 : 14, t => ({ p: p0 + th * smooth(t), kind: K.KICK, minV: vreq + 1.5 }));
     const s0 = len();
     run(Lg, t => ({ p: p0 + th - 2 * th * t, solid: false }));
     const s1 = len();
     features.push({ type: 'gap', s0, s1 });
-    if (rnd() < 0.6) {
+    if (!mini && rnd() < 0.6) {
       // bonus ring over the gap, at the height the ball should pass at launch speed
       const vL = bv - 2, x = Lg / 2;
       const yBall = x * Math.tan(th) - G * x * x / (2 * vL * vL * Math.cos(th) ** 2) + BALL_R;
       const Rarc = Lg / (2 * th), yPath = Rarc * (1 - Math.cos(th));
-      features.push({ type: 'ring', s: (s0 + s1) / 2, hgt: yBall - yPath + 0.4, r: 2.5, fire: false });
+      features.push({ type: 'ring', s: (s0 + s1) / 2, hgt: yBall - yPath + 0.4, r: 2.7, fire: false });
     }
-    run(26, t => ({ p: p0 - th + th * smooth(t) }));
+    run(mini ? 24 : 34, t => ({ p: p0 - th + th * smooth(t) }));
     p = p0; cp();
   }
 
@@ -151,7 +155,7 @@ function generateTrack(seed, level) {
     cp(); straight(12);
     const s = len() + 26;
     const xo = (rnd() * 2 - 1) * Math.min(2.2, 1.2 + level * 0.3);
-    features.push({ type: 'ring', s, hgt: 3.6, r: 2.5, fire: true, xo });
+    features.push({ type: 'ring', s, hgt: 4.2, r: 2.7, fire: true, xo });
     features.push({ type: 'jumpzone', s0: s - 17, s1: s - 8 });
     straight(46, { kind: K.RING });
   }
@@ -169,7 +173,7 @@ function generateTrack(seed, level) {
 
   function vloop() {
     cp(); booster(30, Math.max(36, vt + 4), 28); straight(4);
-    const Rl = R(10, 12), L = 2 * Math.PI * Rl, p0 = p, side = rnd() < 0.5 ? -1 : 1;
+    const Rl = R(13, 16), L = 2 * Math.PI * Rl, p0 = p, side = rnd() < 0.5 ? -1 : 1;
     const Bv = new V3(Math.cos(h), 0, -Math.sin(h));
     const D = side * (2 * HW + 3.5);
     const s0 = len(); let prev = 0;
@@ -185,7 +189,7 @@ function generateTrack(seed, level) {
   // horizontal 360: a descending banked spiral that passes under its own entry
   function helix() {
     cp(); booster(24, vt + 4, vt - 2);
-    const Rh = R(30, 34), d = h > 15 * DEG ? -1 : h < -15 * DEG ? 1 : rnd() < 0.5 ? -1 : 1;
+    const Rh = R(36, 42), d = h > 15 * DEG ? -1 : h < -15 * DEG ? 1 : rnd() < 0.5 ? -1 : 1;
     const L = 2 * Math.PI * Rh, h0 = h, rise = -11;
     const b0 = d * Math.min(36 * DEG, Math.atan(vt * vt / (Rh * G)));
     const s0 = len(); let prev = 0;
@@ -200,14 +204,16 @@ function generateTrack(seed, level) {
   }
 
   straight(30, { kind: K.START }); cp();
-  const conns = [turn, scurve, bumps, camber, camber, rollers, rollers, bigDrop, bigDrop, climb, twistHill, twistHill, () => downhill(R(10, 18) * DEG, R(50, 80))];
-  const specials = ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'pit', 'pit'];
+  const kicker = () => { straight(35); jump(true); };
+  const conns = [turn, scurve, bumps, camber, rollers, rollers, bigDrop, bigDrop, kicker, kicker, kicker, climb, twistHill, twistHill, () => downhill(R(10, 18) * DEG, R(50, 80))];
+  const specials = ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'jump', 'pit', 'pit'];
   for (let i = 0; i < Math.min(level - 1, 8); i++) specials.push(pick(['ring', 'jump', 'vloop', 'helix', 'ring', 'jump', 'pit', 'pit']));
   for (let i = specials.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [specials[i], specials[j]] = [specials[j], specials[i]]; }
-  const fns = { vloop, helix, ring: ringFire, jump, pit };
+  const fns = { vloop, helix, ring: ringFire, jump: () => jump(false), pit };
   for (const sp of specials) {
     const nc = 2 + (rnd() < 0.5 ? 1 : 0);
     for (let c = 0; c < nc; c++) { cp(); pick(conns)(); }
+    straight(40); // settle on the ground before the next special
     fns[sp]();
   }
   cp(); turn(); cp();
@@ -710,7 +716,7 @@ const sfx = {
 // Input: accelerometer tilt (left/right only), keyboard, tap to jump
 // ============================================================================
 const input = { roll: 0, steer: 0, keyL: false, keyR: false, jumpBuf: 0, jumpPow: 1, invert: false };
-const SHAKE_T = 11;
+const SHAKE_T = 4.0;
 const tilt = { lastShake: 0, gLP: null, rd: null, motion: false, beta: null, gamma: null, votes: 0, neutral: 0, needNeutral: true, listening: false };
 const screenAngle = () => {
   const a = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
@@ -747,13 +753,13 @@ function onMotion(e) {
   // jiggle the phone: a sharp linear-acceleration spike kicks the ball into a jump
   let jolt;
   const la = e.acceleration;
-  if (la && la.x != null) jolt = Math.hypot(la.x, la.y, la.z);
+  if (la && la.x != null) jolt = (a === 90 || a === 270) ? Math.hypot(la.x, la.z) : Math.hypot(la.y, la.z);
   else { tilt.gLP = tilt.gLP == null ? m : lerp(tilt.gLP, m, 0.1); jolt = Math.abs(m - tilt.gLP) * 1.4; }
   const now = performance.now();
-  if (jolt > SHAKE_T && now - tilt.lastShake > 450) {
+  if (jolt > SHAKE_T && now - tilt.lastShake > 350) {
     tilt.lastShake = now;
     input.jumpBuf = 0.18;
-    input.jumpPow = clamp(0.95 + (jolt - SHAKE_T) / 22, 0.95, 1.45);
+    input.jumpPow = clamp(1 + (jolt - SHAKE_T) / 12, 1, 1.7);
   }
 }
 function requestSensors() {
@@ -810,7 +816,7 @@ const weather = { quakeNext: 22, quakeT: -1, quakePh: 0, quakeDur: 3.6, quakeEnv
 const D = new V3(), tv = new V3(), tq = new THREE.Quaternion();
 
 // cruising speed: the level's base speed, growing the longer you stay in the level
-function targetV() { return track.vt + Math.min(12, state.levelTime * 0.12); }
+function targetV() { return track.vt + Math.min(16, state.levelTime * 0.2); }
 function setGroundPos(f) {
   ball.pos.copy(f.P).addScaledVector(f.B, ball.x).addScaledVector(f.U, BALL_R);
 }
@@ -830,13 +836,13 @@ function groundStep(dt) {
   else { const tv0 = targetV(); const target = sm.boost ? Math.max(sm.boost, tv0 + 4) : tv0; aS = gT * 0.5 + (target - ball.v) * (sm.boost ? 3 : 0.9); }
   ball.v += aS * dt;
   if (!state.finished && sm.minV && ball.v < sm.minV) ball.v = sm.minV;
-  ball.v = clamp(ball.v, state.finished ? 0 : 6, 60);
+  ball.v = clamp(ball.v, state.finished ? 0 : 6, 95);
 
   const aX = gB + input.steer * STEER_ACC - ball.v * ball.v * f.kB - ball.vx * 2.2 + weather.quakeLat;
   ball.vx += aX * dt; ball.x += ball.vx * dt;
   const wall = HW - BALL_R * 0.6;
-  if (sm.berm > 0.3 && ball.x > wall) { ball.x = wall; if (ball.vx > 0) ball.vx *= -0.25; }
-  if (sm.berm < -0.3 && ball.x < -wall) { ball.x = -wall; if (ball.vx < 0) ball.vx *= -0.25; }
+  if (sm.berm > 0.3 && ball.x > wall) { ball.x = wall; if (ball.vx > 0) ball.vx *= -0.6; }
+  if (sm.berm < -0.3 && ball.x < -wall) { ball.x = -wall; if (ball.vx < 0) ball.vx *= -0.6; }
 
   ball.s += ball.v * dt;
   if (ball.s >= track.len - 1) { ball.s = track.len - 1; ball.v = 0; }
@@ -854,7 +860,8 @@ function airStep(dt) {
   ball.air += dt;
   const f = frameAt(ball.s, F1);
   ball.vel.y -= G * dt;
-  ball.vel.addScaledVector(f.B, (input.steer * 7 + weather.quakeLat * 0.3) * dt);
+  ball.vel.addScaledVector(f.B, (input.steer * 14 + weather.quakeLat * 0.3) * dt);
+  ball.vel.addScaledVector(f.B, -ball.vel.dot(f.B) * (1 - Math.exp(-1.2 * dt))); // sideways air drag
   ball.pos.addScaledVector(ball.vel, dt);
   if (ball.dead) return;
   // follow the nearest track sample by hill-climbing along the tangent
@@ -876,7 +883,7 @@ function airStep(dt) {
     if (xx * side > wall) {
       ball.pos.addScaledVector(g.B, -side * (xx * side - wall));
       const vb = ball.vel.dot(g.B);
-      if (vb * side > 0) ball.vel.addScaledVector(g.B, -vb * 1.25);
+      if (vb * side > 0) ball.vel.addScaledVector(g.B, -vb * 1.6);
       ball.x = side * wall;
     }
   }
@@ -886,6 +893,31 @@ function airStep(dt) {
 
 function land(g, sm) {
   const vn = -ball.vel.dot(g.U);
+  // a jump pressed just before touching down fires on landing
+  if (input.jumpBuf > 0 && !sm.noDetach) {
+    ball.vel.addScaledVector(g.U, vn + JUMP_V * input.jumpPow);
+    input.jumpBuf = 0; input.jumpPow = 1; sfx.jump();
+    ball.pos.copy(g.P).addScaledVector(g.B, clamp(ball.x, -HW, HW)).addScaledVector(g.U, BALL_R + 0.02);
+    ball.air = 0;
+    return;
+  }
+  const gapAhead = track.features.some(f => (f.type === 'pit' || f.type === 'gap') && f.s0 > ball.s && f.s0 - ball.s < 45)
+    || track.rings.some(f => f.fire && f.s > ball.s && f.s - ball.s < 45);
+  if (vn > BOUNCE_MIN && !sm.noDetach && sm.kind !== K.KICK && sm.kind !== K.BOOST && !gapAhead) {
+    // bounce: reflect the normal velocity with restitution and stay airborne
+    ball.vel.addScaledVector(g.U, vn * (1 + BOUNCE_E));
+    const lim = Math.abs(sm.berm) > 0.3 ? HW - BALL_R * 0.6 : HW;
+    ball.x = clamp(ball.x, -lim, lim);
+    ball.pos.copy(g.P).addScaledVector(g.B, ball.x).addScaledVector(g.U, BALL_R + 0.02);
+    sfx.land(vn);
+    for (let k = 0; k < 10; k++) fx.spawn(ball.pos, tv.set((Math.random() - 0.5) * 8, Math.random() * 4, (Math.random() - 0.5) * 8), 0.45, [1, 0.9, 0.7, 0.5], [0.6, 0.4, 0.8, 0], 0.7, 1.4, 6, 2);
+    if (ball.air > 0.8 && state.mode === 'play' && !state.finished) {
+      const pts = Math.round(ball.air * 120) * state.mult;
+      state.score += pts; popup(`BIG AIR +${pts}`, 'good');
+    }
+    ball.air = 0;
+    return;
+  }
   ball.v = Math.max(4, ball.vel.dot(g.T)); ball.vx = ball.vel.dot(g.B) * 0.6;
   const lim = (sm.berm > 0.3 || sm.berm < -0.3) ? HW - BALL_R * 0.6 : HW;
   ball.x = clamp(ball.x, -lim, lim);
@@ -939,7 +971,7 @@ function autopilot() {
   for (const r of track.rings) {
     const d = r.s - ball.s;
     if (d > 0 && d < 70) tx = r.xo;
-    if (r.fire && d > 0 && d < ball.v * 0.42 && ball.grounded) { input.jumpBuf = 0.1; break; }
+    if (r.fire && d > 0 && d < ball.v * (JUMP_V / G) * 0.95 && ball.grounded) { input.jumpBuf = 0.1; break; }
   }
   for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - ball.s; if (d > 0 && d < ball.v * 0.18 && ball.grounded) input.jumpBuf = 0.1; }
   return clamp(ff - (ball.x - tx) * 0.35 - ball.vx * 0.25, -1, 1);
@@ -1015,7 +1047,7 @@ function logic(dt) {
       weather.quakeT = 0; weather.quakePh = Math.random() * 6.28; popup('EARTHQUAKE!', 'bad big'); sfx.quake();
       const sm = track.smp[frameAt(ball.s, F4).i];
       const pitAhead = track.features.some(f => f.type === 'pit' && f.s0 > ball.s - 5 && f.s0 - ball.s < 70);
-      if (ball.grounded && !sm.noDetach && !pitAhead) detach(7);
+      if (ball.grounded && !sm.noDetach && !pitAhead) detach(10);
     }
   }
   if (weather.quakeT >= 0) {
@@ -1159,7 +1191,7 @@ function applyQuality() {
 function trackFps(rawDt) {
   quality.acc += rawDt; quality.frames++; quality.cool -= rawDt;
   if (quality.acc >= 2) {
-    const fps = quality.frames / quality.acc;
+    const fps = quality.frames / quality.acc; quality.fps = fps;
     quality.acc = 0; quality.frames = 0;
     if (!document.hidden && quality.cool <= 0 && fps < 48 && quality.level < QUALITY.length - 1) { quality.level++; applyQuality(); quality.cool = 3; }
   }
@@ -1173,9 +1205,9 @@ function updateCamera(dt) {
   const look = new V3().copy(ball.pos).addScaledVector(bf.T, 5).addScaledVector(bf.U, 0.6);
   if (ball.dead) look.copy(ball.pos);
   if (camSnap) { camPos.copy(desired); camUp.copy(upD); camLook.copy(look); camSnap = false; }
-  if (!ball.dead) camPos.lerp(desired, 1 - Math.exp(-dt * 9));
+  if (!ball.dead) camPos.lerp(desired, 1 - Math.exp(-dt * 16));
   camUp.lerp(upD, 1 - Math.exp(-dt * 5)).normalize();
-  camLook.lerp(look, 1 - Math.exp(-dt * 14));
+  camLook.lerp(look, 1 - Math.exp(-dt * 22));
   camera.position.copy(camPos);
   const sh = weather.quakeEnv * 0.45;
   if (sh > 0) camera.position.add(new V3((Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh));
@@ -1187,7 +1219,7 @@ function updateCamera(dt) {
   if (Math.abs(fov - lastFov) > 0.05) { lastFov = lerp(lastFov, fov, 1 - Math.exp(-dt * 3)); camera.fov = lastFov; camera.updateProjectionMatrix(); updatePointScale(); }
 }
 
-function updateVisuals(dt) {
+function updateVisuals(dt, gdt = dt) {
   state.time += dt;
   // ball spin
   if (ball.grounded && !ball.dead) {
@@ -1196,7 +1228,7 @@ function updateVisuals(dt) {
     const spd = vel.length();
     if (spd > 0.01) { ball.spinAxis.crossVectors(f.U, vel).normalize(); ball.spinRate = spd / BALL_R; }
   }
-  if (ball.spinRate > 0) { tq.setFromAxisAngle(ball.spinAxis, ball.spinRate * dt); ballMesh.quaternion.premultiply(tq); }
+  if (ball.spinRate > 0) { tq.setFromAxisAngle(ball.spinAxis, ball.spinRate * gdt); ballMesh.quaternion.premultiply(tq); }
   ballMesh.position.copy(ball.pos);
   {
     const f = frameAt(ball.s, F4), sm = track.smp[f.i];
@@ -1244,7 +1276,7 @@ function updateVisuals(dt) {
   // pulsing boost chevrons
   if (chevMats[0]) chevMats[0].opacity = 0.65 + 0.35 * Math.sin(state.time * 10);
 
-  fx.update(dt); confetti.update(dt);
+  fx.update(gdt); confetti.update(gdt);
 
   // fog
   const fa = weather.fogAmt;
@@ -1283,7 +1315,7 @@ function updateVisuals(dt) {
     elLives.textContent = '❤'.repeat(Math.max(0, state.lives));
     elProg.style.width = `${clamp(ball.s / track.finishS, 0, 1) * 100}%`;
     elTilt.style.left = `${50 + input.steer * 45}%`;
-    elSpeed.textContent = `${Math.round(ball.v * 3.6)} km/h`;
+    elSpeed.textContent = `${Math.round(ball.v * TIME_SCALE * 3.6)} km/h`;
   }
 }
 
@@ -1303,17 +1335,18 @@ let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
   const rawDt = (now - last) / 1000; last = now;
-  const dt = Math.min(0.05, rawDt);
+  const dt = Math.min(0.066, rawDt);
   if (rawDt < 0.5) trackFps(rawDt);
   readInput(dt);
   if (state.mode === 'count') updateCountdown(dt);
+  const gdt = dt * TIME_SCALE;
   if (state.mode === 'play' || state.mode === 'demo') {
-    const n = Math.ceil(dt / (1 / 120)), h = dt / n;
+    const n = Math.ceil(gdt / (1 / 150)), h = gdt / n;
     for (let k = 0; k < n; k++) physicsStep(h);
     input.jumpBuf = Math.max(0, input.jumpBuf - dt);
-    logic(dt);
+    logic(gdt);
   }
-  updateVisuals(dt);
+  updateVisuals(dt, gdt);
   renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
 }
