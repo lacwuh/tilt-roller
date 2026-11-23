@@ -856,15 +856,26 @@ function requestSensors() {
     window.addEventListener('deviceorientation', onOrient);
   });
 }
+// keyboard (desktop testing): left/right arrows or A/D steer, Space / up / W jumps;
+// on the start and result screens Enter or Space presses the main button
 window.addEventListener('keydown', e => {
-  if (e.code === 'ArrowLeft' || e.code === 'KeyA') input.keyL = true;
-  if (e.code === 'ArrowRight' || e.code === 'KeyD') input.keyR = true;
-  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') { input.jumpBuf = 0.15; e.preventDefault(); }
+  const k = e.code;
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(k)) e.preventDefault();
+  if (e.repeat) return;
+  if (!overlay.classList.contains('hidden') && (k === 'Enter' || k === 'Space')) { ovBtn.click(); return; }
+  if (k === 'ArrowLeft' || k === 'KeyA') { input.keyL = true; input.keyLt = performance.now(); }
+  if (k === 'ArrowRight' || k === 'KeyD') { input.keyR = true; input.keyRt = performance.now(); }
+  if (k === 'Space' || k === 'ArrowUp' || k === 'KeyW') { input.jumpBuf = 0.15; input.jumpPow = 1; }
 });
 window.addEventListener('keyup', e => {
   if (e.code === 'ArrowLeft' || e.code === 'KeyA') input.keyL = false;
   if (e.code === 'ArrowRight' || e.code === 'KeyD') input.keyR = false;
 });
+// like touch: a tap nudges, holding ramps up to full lock (and a drift) over ~half a second
+function keySteer() {
+  const now = performance.now(), ramp = t => Math.min(1, 0.3 + (now - t) / 500);
+  return (input.keyR ? ramp(input.keyRt) : 0) - (input.keyL ? ramp(input.keyLt) : 0);
+}
 const touches = new Map(); // id -> {x0, y0, zone, swiped}
 function touchZone(x) { const w = innerWidth; return x < w * 0.36 ? -1 : x > w * 0.64 ? 1 : 0; }
 canvas.addEventListener('touchstart', e => {
@@ -892,7 +903,7 @@ document.getElementById('invert').addEventListener('change', e => { input.invert
 function readInput(dt) {
   let target = 0, rollT = 0;
   if (state.mode === 'demo') target = autopilot();
-  else if (input.keyL || input.keyR) target = (input.keyR ? 1 : 0) - (input.keyL ? 1 : 0);
+  else if (input.keyL || input.keyR) target = keySteer();
   else if (touchSteer() !== 0) target = touchSteer();
   else if (tilt.rd !== null) {
     const ang = Math.asin(clamp(tilt.rd, -1, 1)) / DEG;
@@ -1437,7 +1448,7 @@ function levelComplete() {
   ovTitle.innerHTML = `LEVEL ${state.level}<br>COMPLETE!`;
   ovBody.innerHTML = `Score <b>${Math.floor(state.score)}</b><br>Next track is longer and faster. +1 life!`;
   setButtons(['NEXT LEVEL', () => { state.level++; state.lives = Math.min(5, state.lives + 1); beginLevel(); }], ['TRUCK RACE', () => startGame('race')]);
-  ovHint.textContent = '';
+  ovHint.textContent = ('ontouchstart' in window) ? '' : DESKTOP_HINT;
   overlay.classList.remove('hidden');
 }
 function raceComplete() {
@@ -1449,7 +1460,7 @@ function raceComplete() {
   ovTitle.innerHTML = player.finishPlace === 1 ? 'YOU<br>WIN!' : `${ORD(player.finishPlace || race.rank)}<br>PLACE`;
   ovBody.innerHTML = `<div class="results">${rows}</div>Score <b>${Math.floor(state.score)}</b>`;
   setButtons(['NEXT RACE', () => { state.level++; beginLevel(); }], ['BALL RUN', () => startGame('ball')]);
-  ovHint.textContent = '';
+  ovHint.textContent = ('ontouchstart' in window) ? '' : DESKTOP_HINT;
   overlay.classList.remove('hidden');
 }
 function gameOver() {
@@ -1471,9 +1482,10 @@ function setButtons(b1, b2) {
   ovBtn2.classList.toggle('hidden', !b2);
   if (b2) { ovBtn2.textContent = b2[0]; ovAct2 = b2[1]; }
 }
-ovBtn.addEventListener('click', () => { initAudio(); requestSensors(); ovAct1(); });
-ovBtn2.addEventListener('click', () => { initAudio(); requestSensors(); ovAct2(); });
-if (!('ontouchstart' in window)) ovHint.textContent = 'Desktop: ← → to steer, Space to jump.';
+ovBtn.addEventListener('click', () => { ovBtn.blur(); initAudio(); requestSensors(); ovAct1(); });
+ovBtn2.addEventListener('click', () => { ovBtn2.blur(); initAudio(); requestSensors(); ovAct2(); });
+const DESKTOP_HINT = 'Keyboard: ← → steer (hold to drift), Space jump, Enter start.';
+if (!('ontouchstart' in window)) ovHint.textContent = DESKTOP_HINT;
 
 function updateCountdown(dt) {
   state.countT -= dt;
