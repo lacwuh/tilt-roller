@@ -48,3 +48,4 @@ button:active { transform: translateY(4px); box-shadow: 0 2px 0 #a83f12; }
 .opt { display: block; margin-top: 16px; font-size: 14px; opacity: .8; }
 #ovHint { margin-top: 10px; font-size: 12px; opacity: .6; }
 #flash { position: fixed; inset: 0; pointer-events: none; background: #ff6a00; opacity: 0; transition: opacity .35s; }
+#speed { position: absolute; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 12px); font-size: 20px; font-weight: 900; font-style: italic; text-shadow: 0 2px 0 #0006; }

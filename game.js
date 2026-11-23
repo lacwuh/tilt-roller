@@ -42,7 +42,7 @@ function generateTrack(seed, level) {
   const rnd = mulberry32(seed);
   const R = (a, b) => a + (b - a) * rnd();
   const pick = a => a[Math.floor(rnd() * a.length)];
-  const vt = Math.min(26 + level * 1.5, 36);
+  const vt = Math.min(33 + level * 1.5, 44);
   const smp = [], features = [], checkpoints = [];
   const pos = new V3(); let h = 0, p = 0;
   const dir = new V3();
@@ -68,13 +68,14 @@ function generateTrack(seed, level) {
   const straight = (L, o = {}) => run(L, () => o);
 
   // banked curve ("berm"): yaw rate follows 6t(1-t); bank & outer wall follow it
-  function curve(ang, rad) {
-    const h0 = h, L = Math.abs(ang) * rad;
+  function curve(ang, rad, pA = 0) {
+    const h0 = h, p0 = p, L = Math.abs(ang) * rad;
     const b0 = Math.sign(ang) * Math.min(35 * DEG, Math.atan(vt * vt * 1.5 / (rad * G)) * 0.8);
     run(L, t => {
       const e = 4 * t * (1 - t);
-      return { h: h0 + ang * smooth(t), bank: b0 * e, berm: Math.sign(ang) * Math.min(1, e * 1.6) };
+      return { h: h0 + ang * smooth(t), p: p0 + pA * Math.sin(2 * Math.PI * t), bank: b0 * e, berm: Math.sign(ang) * Math.min(1, e * 3) };
     });
+    p = p0;
   }
   const chooseDir = () => (h > 25 * DEG ? -1 : h < -25 * DEG ? 1 : rnd() < 0.5 ? -1 : 1);
   function turn() {
@@ -90,7 +91,31 @@ function generateTrack(seed, level) {
   }
   function hill(A, L) { const p0 = p; run(L, t => ({ p: p0 + A * Math.sin(2 * Math.PI * t) })); p = p0; }
   function downhill(A, L) { const p0 = p; run(L, t => ({ p: p0 - A * Math.sin(Math.PI * t) })); p = p0; }
-  function bumps() { const n = 2 + Math.floor(rnd() * 3), A = R(7, 11) * DEG, L = R(26, 34); for (let i = 0; i < n; i++) hill(A, L); }
+  function bumps() { const n = 2 + Math.floor(rnd() * 3), A = R(8, 13) * DEG, L = R(26, 34); for (let i = 0; i < n; i++) hill(A, L); }
+  // roller-coaster waves of varying size
+  function rollers() { const n = 3 + Math.floor(rnd() * 3); for (let i = 0; i < n; i++) hill(R(10, 20) * DEG, R(34, 55)); }
+  // steep drop: the convex lip throws the ball into the air at speed
+  function bigDrop() {
+    const A = R(22, 34) * DEG, p0 = p;
+    run(R(18, 26), t => ({ p: p0 - A * smooth(t) }));
+    straight(R(15, 35));
+    run(R(24, 32), t => ({ p: p0 - A + A * smooth(t) }));
+    p = p0;
+  }
+  function climb() {
+    const A = R(10, 16) * DEG, p0 = p;
+    run(R(20, 28), t => ({ p: p0 + A * smooth(t) }));
+    straight(R(25, 50));
+    run(R(20, 28), t => ({ p: p0 + A - A * smooth(t) }));
+    p = p0;
+  }
+  // banked turn that also goes over a crest or through a dip
+  function twistHill() {
+    const d = chooseDir();
+    let a = R(40, 80) * DEG;
+    a = Math.max(15 * DEG, Math.min(a, 65 * DEG - d * h));
+    curve(d * a, R(60, 85), R(8, 14) * DEG * (rnd() < 0.5 ? 1 : -1));
+  }
   // off-camber straight: the road leans sideways with no wall, the player must tilt against it
   function camber() {
     const d = rnd() < 0.5 ? -1 : 1, b0 = d * (R(9, 14) + Math.min(level, 6)) * DEG;
@@ -103,7 +128,8 @@ function generateTrack(seed, level) {
     const th = (15 + Math.min(level, 5)) * DEG;
     const Lg = 16 + Math.min(level, 6) * 1.5;
     const vreq = Math.sqrt(Lg * G / Math.sin(2 * th));
-    cp(); booster(26, vreq + 5, vreq + 1.5);
+    const bv = Math.max(vreq + 5, vt + 3);
+    cp(); booster(26, bv, vreq + 1.5);
     const p0 = p;
     run(14, t => ({ p: p0 + th * smooth(t), kind: K.KICK }));
     const s0 = len();
@@ -112,7 +138,7 @@ function generateTrack(seed, level) {
     features.push({ type: 'gap', s0, s1 });
     if (rnd() < 0.6) {
       // bonus ring over the gap, at the height the ball should pass at launch speed
-      const vL = vreq + 3, x = Lg / 2;
+      const vL = bv - 2, x = Lg / 2;
       const yBall = x * Math.tan(th) - G * x * x / (2 * vL * vL * Math.cos(th) ** 2) + BALL_R;
       const Rarc = Lg / (2 * th), yPath = Rarc * (1 - Math.cos(th));
       features.push({ type: 'ring', s: (s0 + s1) / 2, hgt: yBall - yPath + 0.4, r: 2.5, fire: false });
@@ -130,8 +156,19 @@ function generateTrack(seed, level) {
     straight(46, { kind: K.RING });
   }
 
+  // pit: a hole in flat road with no ramp, must be jumped (tap or jiggle the phone)
+  function pit() {
+    cp(); straight(45);
+    const s0 = len() + 30, Lg = R(8, 11) + Math.min(level, 6) * 0.6;
+    features.push({ type: 'pitzone', s0: s0 - 28, s1: s0 - 3 });
+    straight(30);
+    run(Lg, () => ({ solid: false }));
+    features.push({ type: 'pit', s0, s1: len() });
+    straight(30); cp();
+  }
+
   function vloop() {
-    cp(); booster(30, 36, 28); straight(4);
+    cp(); booster(30, Math.max(36, vt + 4), 28); straight(4);
     const Rl = R(10, 12), L = 2 * Math.PI * Rl, p0 = p, side = rnd() < 0.5 ? -1 : 1;
     const Bv = new V3(Math.cos(h), 0, -Math.sin(h));
     const D = side * (2 * HW + 3.5);
@@ -155,7 +192,7 @@ function generateTrack(seed, level) {
     run(L, t => {
       const sm = smooth(t); const off = new V3(0, rise * (sm - prev), 0); prev = sm;
       const e = smooth(Math.min(1, t / 0.08, (1 - t) / 0.08));
-      return { h: h0 + d * 2 * Math.PI * t, off, bank: b0 * e, berm: d * e, minV: 20, kind: K.HELIX };
+      return { h: h0 + d * 2 * Math.PI * t, off, bank: b0 * e, berm: d, minV: 20, kind: K.HELIX };
     });
     h = h0;
     features.push({ type: 'loop', s0, s1: len(), name: 'SPIRAL!' });
@@ -163,13 +200,13 @@ function generateTrack(seed, level) {
   }
 
   straight(30, { kind: K.START }); cp();
-  const conns = [turn, turn, scurve, bumps, camber, camber, () => hill(R(6, 10) * DEG, R(40, 60)), () => downhill(R(8, 14) * DEG, R(50, 80))];
-  const specials = ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump'];
-  for (let i = 0; i < Math.min(level - 1, 8); i++) specials.push(pick(['ring', 'jump', 'vloop', 'helix', 'ring', 'jump']));
+  const conns = [turn, scurve, bumps, camber, camber, rollers, rollers, bigDrop, bigDrop, climb, twistHill, twistHill, () => downhill(R(10, 18) * DEG, R(50, 80))];
+  const specials = ['vloop', 'helix', 'ring', 'ring', 'jump', 'jump', 'pit', 'pit'];
+  for (let i = 0; i < Math.min(level - 1, 8); i++) specials.push(pick(['ring', 'jump', 'vloop', 'helix', 'ring', 'jump', 'pit', 'pit']));
   for (let i = specials.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [specials[i], specials[j]] = [specials[j], specials[i]]; }
-  const fns = { vloop, helix, ring: ringFire, jump };
+  const fns = { vloop, helix, ring: ringFire, jump, pit };
   for (const sp of specials) {
-    const nc = 1 + (rnd() < 0.55 ? 1 : 0);
+    const nc = 2 + (rnd() < 0.5 ? 1 : 0);
     for (let c = 0; c < nc; c++) { cp(); pick(conns)(); }
     fns[sp]();
   }
@@ -230,6 +267,7 @@ const F1 = mkF(), F2 = mkF(), F3 = mkF(), F4 = mkF();
 const canvas = document.getElementById('c');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+const DPR = window.devicePixelRatio || 1;
 renderer.setSize(innerWidth, innerHeight, false);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -242,7 +280,7 @@ const HORIZON = new THREE.Color('#ffa77a');
 const FOG_COLOR = new THREE.Color('#d8cbe6');
 scene.fog = new THREE.Fog(HORIZON.clone(), 160, 700);
 const camera = new THREE.PerspectiveCamera(66, innerWidth / innerHeight, 0.1, 3000);
-const SUN_DIR = new V3(0.35, 0.8, 0.45).normalize();
+const SUN_DIR = new V3(0.22, 0.92, 0.32).normalize();
 
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false,
@@ -281,8 +319,8 @@ const hemi = new THREE.HemisphereLight('#cfd8ff', '#6a3d6e', 0.7);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight('#fff0d8', 2.6);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 220 });
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -20, right: 20, top: 20, bottom: -20, near: 1, far: 220 });
 sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
 scene.add(sun, sun.target);
 
@@ -294,18 +332,30 @@ scene.add(cubeCam);
 function ballTexture() {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256;
   const x = c.getContext('2d');
-  const cols = ['#ff3b5c', '#ffd23f', '#3bceac', '#4d7cff', '#ff8a3a', '#b14dff'];
-  for (let i = 0; i < 6; i++) { x.fillStyle = cols[i]; x.fillRect(i * 512 / 6, 0, 512 / 6 + 1, 256); }
-  x.fillStyle = '#ffffff'; x.fillRect(0, 0, 512, 30); x.fillRect(0, 226, 512, 30);
-  x.fillStyle = '#ffffffcc';
-  for (let i = 0; i < 6; i++) { x.beginPath(); x.arc(i * 512 / 6 + 42, 128, 14, 0, Math.PI * 2); x.fill(); }
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, 512, 256);
+  x.fillStyle = '#2a3550';
+  x.fillRect(0, 125, 512, 6);                       // equator
+  x.fillRect(0, 0, 6, 256); x.fillRect(253, 0, 6, 256); // meridians
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
   return t;
 }
-const ballMat = new THREE.MeshStandardMaterial({ map: ballTexture(), roughness: 0.12, metalness: 0.55, envMap: cubeRT.texture, envMapIntensity: 1.2 });
+const ballMat = new THREE.MeshStandardMaterial({ map: ballTexture(), color: '#e9eef8', roughness: 0.04, metalness: 1.0, envMap: cubeRT.texture, envMapIntensity: 1.35 });
 const ballMesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 40, 24), ballMat);
 ballMesh.castShadow = true;
 scene.add(ballMesh);
+
+// contact shadow: a soft dark blob projected straight down onto the road under the ball
+const blobTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d'), gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.7)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+})();
+const blob = new THREE.Mesh(new THREE.PlaneGeometry(BALL_R * 3.2, BALL_R * 3.2),
+  new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, toneMapped: false }));
+blob.renderOrder = 2;
+scene.add(blob);
 
 // ============================================================================
 // Particles (additive fire/sparks, and confetti)
@@ -463,10 +513,11 @@ function buildWorld(tr) {
     im.count = list.length; chevMats.push(mat); g.add(im);
   };
   chevMats = [];
-  const boostS = [], jzS = [];
+  const boostS = [], jzS = [], pitS = [];
+  for (const f of tr.features) if (f.type === 'pitzone') for (let s = f.s0; s <= f.s1; s += 2.5) pitS.push(s);
   for (let i = 0; i < tr.N; i += 8) if (tr.smp[i].kind === K.BOOST) boostS.push(i * DS);
   for (const f of tr.features) if (f.type === 'jumpzone') for (let s = f.s0; s <= f.s1; s += 2.5) jzS.push(s);
-  mkChev('#39f3ff', boostS); mkChev('#ffe04a', jzS);
+  mkChev('#39f3ff', boostS); mkChev('#ffe04a', jzS); mkChev('#ff2a4a', pitS);
 
   // ---- rings
   for (const f of tr.rings) {
@@ -658,8 +709,9 @@ const sfx = {
 // ============================================================================
 // Input: accelerometer tilt (left/right only), keyboard, tap to jump
 // ============================================================================
-const input = { steer: 0, keyL: false, keyR: false, jumpBuf: 0, invert: false };
-const tilt = { rd: null, motion: false, beta: null, gamma: null, votes: 0, neutral: 0, needNeutral: true, listening: false };
+const input = { roll: 0, steer: 0, keyL: false, keyR: false, jumpBuf: 0, jumpPow: 1, invert: false };
+const SHAKE_T = 11;
+const tilt = { lastShake: 0, gLP: null, rd: null, motion: false, beta: null, gamma: null, votes: 0, neutral: 0, needNeutral: true, listening: false };
 const screenAngle = () => {
   const a = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
   return ((a % 360) + 360) % 360;
@@ -691,6 +743,18 @@ function onMotion(e) {
   }
   if (tilt.votes < -4) rd = -rd;
   tilt.motion = true; tilt.rd = rd;
+
+  // jiggle the phone: a sharp linear-acceleration spike kicks the ball into a jump
+  let jolt;
+  const la = e.acceleration;
+  if (la && la.x != null) jolt = Math.hypot(la.x, la.y, la.z);
+  else { tilt.gLP = tilt.gLP == null ? m : lerp(tilt.gLP, m, 0.1); jolt = Math.abs(m - tilt.gLP) * 1.4; }
+  const now = performance.now();
+  if (jolt > SHAKE_T && now - tilt.lastShake > 450) {
+    tilt.lastShake = now;
+    input.jumpBuf = 0.18;
+    input.jumpPow = clamp(0.95 + (jolt - SHAKE_T) / 22, 0.95, 1.45);
+  }
 }
 function requestSensors() {
   const reqs = [];
@@ -714,35 +778,39 @@ window.addEventListener('keyup', e => {
   if (e.code === 'ArrowLeft' || e.code === 'KeyA') input.keyL = false;
   if (e.code === 'ArrowRight' || e.code === 'KeyD') input.keyR = false;
 });
-canvas.addEventListener('touchstart', e => { e.preventDefault(); input.jumpBuf = 0.15; }, { passive: false });
+canvas.addEventListener('touchstart', e => { e.preventDefault(); input.jumpBuf = 0.15; input.jumpPow = 1; }, { passive: false });
 canvas.addEventListener('mousedown', () => { input.jumpBuf = 0.15; });
 document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 document.getElementById('invert').addEventListener('change', e => { input.invert = e.target.checked; });
 
 function readInput(dt) {
-  let target = 0;
+  let target = 0, rollT = 0;
   if (state.mode === 'demo') target = autopilot();
   else if (input.keyL || input.keyR) target = (input.keyR ? 1 : 0) - (input.keyL ? 1 : 0);
   else if (tilt.rd !== null) {
     const ang = Math.asin(clamp(tilt.rd, -1, 1)) / DEG;
     if (tilt.needNeutral) { tilt.neutral = clamp(ang, -10, 10); tilt.needNeutral = false; }
     const d = ang - tilt.neutral, dz = 1.5, mx = 20;
+    rollT = ang * DEG; // physical roll of the phone (relative to gravity)
     target = Math.sign(d) * Math.min(1, Math.max(0, Math.abs(d) - dz) / (mx - dz));
     if (input.invert) target = -target;
   }
   input.steer += (target - input.steer) * (1 - Math.exp(-dt * 14));
+  input.roll += (rollT - input.roll) * (1 - Math.exp(-dt * 25));
 }
 
 // ============================================================================
 // Game state & physics
 // ============================================================================
-const state = { mode: 'demo', level: 1, score: 0, lives: 3, mult: 1, finished: false, finishT: 0, prevS: 0, respawnT: 0, countT: 0, lastCount: -1, time: 0, best: 0 };
+const state = { levelTime: 0, mode: 'demo', level: 1, score: 0, lives: 3, mult: 1, finished: false, finishT: 0, prevS: 0, respawnT: 0, countT: 0, lastCount: -1, time: 0, best: 0 };
 try { state.best = +localStorage.getItem('tiltRollerBest') || 0; } catch (e) { /* ignore */ }
 const ball = { s: 2, x: 0, v: 0, vx: 0, grounded: true, pos: new V3(), vel: new V3(), air: 0, dead: false, h: 0, invuln: 0, burnT: 0, spinAxis: new V3(1, 0, 0), spinRate: 0, lastKind: 0, fallS: 0 };
 const weather = { quakeNext: 22, quakeT: -1, quakePh: 0, quakeDur: 3.6, quakeEnv: 0, quakeLat: 0, fogNext: 35, fogT: -1, fogDur: 14, fogAmt: 0 };
 
 const D = new V3(), tv = new V3(), tq = new THREE.Quaternion();
 
+// cruising speed: the level's base speed, growing the longer you stay in the level
+function targetV() { return track.vt + Math.min(12, state.levelTime * 0.12); }
 function setGroundPos(f) {
   ball.pos.copy(f.P).addScaledVector(f.B, ball.x).addScaledVector(f.U, BALL_R);
 }
@@ -759,7 +827,7 @@ function groundStep(dt) {
   const gT = -G * f.T.y, gB = -G * f.B.y, gU = -G * f.U.y;
   let aS;
   if (state.finished) aS = gT * 0.3 - 16 * Math.sign(ball.v);
-  else { const target = sm.boost || track.vt; aS = gT * 0.5 + (target - ball.v) * (sm.boost ? 3 : 0.9); }
+  else { const tv0 = targetV(); const target = sm.boost ? Math.max(sm.boost, tv0 + 4) : tv0; aS = gT * 0.5 + (target - ball.v) * (sm.boost ? 3 : 0.9); }
   ball.v += aS * dt;
   if (!state.finished && sm.minV && ball.v < sm.minV) ball.v = sm.minV;
   ball.v = clamp(ball.v, state.finished ? 0 : 6, 60);
@@ -773,11 +841,12 @@ function groundStep(dt) {
   ball.s += ball.v * dt;
   if (ball.s >= track.len - 1) { ball.s = track.len - 1; ball.v = 0; }
 
-  if (input.jumpBuf > 0 && !sm.noDetach) { input.jumpBuf = 0; detach(JUMP_V); sfx.jump(); return; }
+  if (input.jumpBuf > 0 && !sm.noDetach) { input.jumpBuf = 0; detach(JUMP_V * input.jumpPow); input.jumpPow = 1; sfx.jump(); return; }
   const Fn = ball.v * ball.v * f.kN - gU;
   const f2 = frameAt(ball.s, F2);
   const sm2 = track.smp[f2.i];
-  if (!sm2.solid || Math.abs(ball.x) > HW + 0.15 || (!sm.noDetach && Fn < -2)) { detach(0); return; }
+  // banked turns hold the ball like a coaster car; elsewhere a fast crest throws it into the air
+  if (!sm2.solid || Math.abs(ball.x) > HW + 0.15 || (!sm.noDetach && Math.abs(sm.berm) < 0.3 && Fn < -2)) { detach(0); return; }
   setGroundPos(f2);
 }
 
@@ -801,7 +870,17 @@ function airStep(dt) {
   const hh = D.dot(g.U), xx = D.dot(g.B);
   ball.h = hh; ball.x = xx;
   const sm = track.smp[g.i];
-  if (sm.solid && Math.abs(xx) < HW + 0.2 && hh <= BALL_R && hh > -1.4 && ball.vel.dot(g.U) <= 0.5) { land(g, sm); return; }
+  // the raised berm on the outside of a curve is a wall for an airborne ball too
+  if (sm.solid && Math.abs(sm.berm) > 0.3 && hh < BALL_R + 1.7 * Math.abs(sm.berm) + 1.5 && hh > -1) {
+    const side = Math.sign(sm.berm), wall = HW - BALL_R * 0.6;
+    if (xx * side > wall) {
+      ball.pos.addScaledVector(g.B, -side * (xx * side - wall));
+      const vb = ball.vel.dot(g.B);
+      if (vb * side > 0) ball.vel.addScaledVector(g.B, -vb * 1.25);
+      ball.x = side * wall;
+    }
+  }
+  if (sm.solid && Math.abs(ball.x) < HW + 0.2 && hh <= BALL_R && hh > -1.4 && ball.vel.dot(g.U) <= 0.5) { land(g, sm); return; }
   if ((ball.air > 0.5 && hh < -22) || D.length() > 90) fallOff();
 }
 
@@ -837,7 +916,7 @@ function fallOff() {
 function respawn() {
   let best = track.checkpoints[0];
   for (const c of track.checkpoints) if (c * DS <= ball.fallS - 2) best = c;
-  ball.s = best * DS + 1; ball.x = 0; ball.vx = 0; ball.v = track.vt; ball.grounded = true; ball.dead = false; ball.air = 0;
+  ball.s = best * DS + 1; ball.x = 0; ball.vx = 0; ball.v = targetV(); ball.grounded = true; ball.dead = false; ball.air = 0;
   ball.invuln = 1.5; ball.burnT = 0;
   for (const f of track.features) {
     if (f.type === 'ring' && f.s > ball.s) f.done = false;
@@ -862,6 +941,7 @@ function autopilot() {
     if (d > 0 && d < 70) tx = r.xo;
     if (r.fire && d > 0 && d < ball.v * 0.42 && ball.grounded) { input.jumpBuf = 0.1; break; }
   }
+  for (const f of track.features) if (f.type === 'pit') { const d = f.s0 - ball.s; if (d > 0 && d < ball.v * 0.18 && ball.grounded) input.jumpBuf = 0.1; }
   return clamp(ff - (ball.x - tx) * 0.35 - ball.vx * 0.25, -1, 1);
 }
 
@@ -914,10 +994,13 @@ function logic(dt) {
           f.clean = false; sfx.loop();
           if (state.mode === 'play') { const pts = 300 * state.mult; state.score += pts; popup(`${f.name} +${pts}`, 'good'); state.mult = Math.min(5, state.mult + 1); }
         }
-      } else if (f.type === 'finish' && !state.finished && ps < f.s && s >= f.s) finishReached();
+      } else if (f.type === 'pitzone' && ps < f.s0 && s >= f.s0) { if (state.mode === 'play') popup('PIT! JUMP!', 'bad'); }
+      else if (f.type === 'pit' && ps < f.s1 && s >= f.s1 && state.mode === 'play') { const pts = 200 * state.mult; state.score += pts; popup(`CLEARED +${pts}`, 'good'); }
+      else if (f.type === 'finish' && !state.finished && ps < f.s && s >= f.s) finishReached();
     }
   }
   state.prevS = s;
+  if (!state.finished) state.levelTime += dt;
   if (state.mode === 'play' && ball.grounded && !ball.dead && !state.finished) state.score += ball.v * dt * 0.5 * state.mult;
 
   // boost entry
@@ -931,7 +1014,8 @@ function logic(dt) {
     if (weather.quakeNext <= 0 && weather.quakeT < 0) {
       weather.quakeT = 0; weather.quakePh = Math.random() * 6.28; popup('EARTHQUAKE!', 'bad big'); sfx.quake();
       const sm = track.smp[frameAt(ball.s, F4).i];
-      if (ball.grounded && !sm.noDetach) detach(7);
+      const pitAhead = track.features.some(f => f.type === 'pit' && f.s0 > ball.s - 5 && f.s0 - ball.s < 70);
+      if (ball.grounded && !sm.noDetach && !pitAhead) detach(7);
     }
   }
   if (weather.quakeT >= 0) {
@@ -989,12 +1073,12 @@ function burstConfetti(at, n) {
 const hud = document.getElementById('hud'), overlay = document.getElementById('overlay');
 const ovTitle = document.getElementById('ovTitle'), ovBody = document.getElementById('ovBody'), ovBtn = document.getElementById('ovBtn'), ovHint = document.getElementById('ovHint');
 const elScore = document.getElementById('score'), elMult = document.getElementById('mult'), elLevel = document.getElementById('level'), elLives = document.getElementById('lives');
-const elProg = document.getElementById('progFill'), elTilt = document.getElementById('tiltDot');
+const elSpeed = document.getElementById('speed'), elProg = document.getElementById('progFill'), elTilt = document.getElementById('tiltDot');
 let camSnap = true;
 
 function resetRun() {
   ball.s = 2; ball.x = 0; ball.vx = 0; ball.v = 0; ball.grounded = true; ball.dead = false; ball.air = 0; ball.invuln = 0; ball.burnT = 0;
-  state.finished = false; state.finishT = 0; state.prevS = ball.s; state.respawnT = 0;
+  state.finished = false; state.finishT = 0; state.prevS = ball.s; state.respawnT = 0; state.levelTime = 0;
   weather.quakeT = -1; weather.quakeEnv = 0; weather.quakeLat = 0; weather.quakeNext = 18 + Math.random() * 12;
   weather.fogT = -1; weather.fogAmt = 0; weather.fogNext = 28 + Math.random() * 20;
   setGroundPos(frameAt(ball.s, F2));
@@ -1061,13 +1145,31 @@ function updateCountdown(dt) {
 // ============================================================================
 const camPos = new V3(), camUp = new V3(0, 1, 0), camLook = new V3();
 let lastFov = 66, frameNo = 0;
+// adaptive quality: if the frame rate drops, lower resolution and reflection rate
+const quality = { level: 0, reflEvery: 2, acc: 0, frames: 0, cool: 3 };
+const QUALITY = [
+  { pr: 2, refl: 2 }, { pr: 1.6, refl: 3 }, { pr: 1.3, refl: 4 }, { pr: 1.0, refl: 6 },
+];
+function applyQuality() {
+  const q = QUALITY[quality.level];
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pr));
+  quality.reflEvery = q.refl;
+  onResize();
+}
+function trackFps(rawDt) {
+  quality.acc += rawDt; quality.frames++; quality.cool -= rawDt;
+  if (quality.acc >= 2) {
+    const fps = quality.frames / quality.acc;
+    quality.acc = 0; quality.frames = 0;
+    if (!document.hidden && quality.cool <= 0 && fps < 48 && quality.level < QUALITY.length - 1) { quality.level++; applyQuality(); quality.cool = 3; }
+  }
+}
 
 function updateCamera(dt) {
-  const f = frameAt(Math.max(0, ball.s - 7.5), F3);
-  const desired = tv.copy(f.P).addScaledVector(f.U, 3.4).addScaledVector(f.B, clamp(ball.x, -HW, HW) * 0.6);
+  const f = frameAt(Math.max(0, ball.s - 8.5), F3);
+  const desired = tv.copy(f.P).addScaledVector(f.U, 4.0).addScaledVector(f.B, clamp(ball.x, -HW, HW) * 0.6);
   const bf = frameAt(ball.s, F4);
-  const roll = input.steer * 12 * DEG;
-  const upD = new V3().copy(f.U).multiplyScalar(Math.cos(roll)).addScaledVector(f.B, -Math.sin(roll));
+  const upD = new V3().copy(f.U);
   const look = new V3().copy(ball.pos).addScaledVector(bf.T, 5).addScaledVector(bf.U, 0.6);
   if (ball.dead) look.copy(ball.pos);
   if (camSnap) { camPos.copy(desired); camUp.copy(upD); camLook.copy(look); camSnap = false; }
@@ -1079,7 +1181,9 @@ function updateCamera(dt) {
   if (sh > 0) camera.position.add(new V3((Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh, (Math.random() - 0.5) * sh));
   camera.up.copy(camUp);
   camera.lookAt(camLook);
-  const fov = 64 + clamp(ball.v - 24, 0, 20) * 0.7;
+  // keep the picture upright in the real world: undo the phone's roll on screen
+  if (input.roll) camera.rotateZ(-input.roll);
+  const fov = 64 + clamp(ball.v - 28, 0, 26) * 0.55;
   if (Math.abs(fov - lastFov) > 0.05) { lastFov = lerp(lastFov, fov, 1 - Math.exp(-dt * 3)); camera.fov = lastFov; camera.updateProjectionMatrix(); updatePointScale(); }
 }
 
@@ -1094,6 +1198,17 @@ function updateVisuals(dt) {
   }
   if (ball.spinRate > 0) { tq.setFromAxisAngle(ball.spinAxis, ball.spinRate * dt); ballMesh.quaternion.premultiply(tq); }
   ballMesh.position.copy(ball.pos);
+  {
+    const f = frameAt(ball.s, F4), sm = track.smp[f.i];
+    const hgt = ball.grounded ? 0 : Math.max(0, ball.h - BALL_R);
+    blob.visible = !ball.dead && sm.solid && hgt < 25 && Math.abs(ball.x) < HW + 0.3;
+    if (blob.visible) {
+      blob.position.copy(f.P).addScaledVector(f.B, ball.x).addScaledVector(f.U, 0.03);
+      blob.quaternion.copy(basis(f.B, f.T, f.U));
+      blob.scale.setScalar(1 + hgt * 0.09);
+      blob.material.opacity = clamp(1 - hgt / 22, 0.15, 1);
+    }
+  }
   ballMesh.visible = ball.invuln <= 0 || Math.floor(state.time * 12) % 2 === 0;
 
   // trails / burn / boost sparkles
@@ -1144,8 +1259,8 @@ function updateVisuals(dt) {
   updateCamera(dt);
   sky.position.copy(camera.position);
 
-  // live reflections on the ball (every other frame)
-  if ((frameNo++ & 1) === 0) {
+  // live reflections on the ball (every quality.reflEvery frames)
+  if ((frameNo++ % quality.reflEvery) === 0) {
     ballMesh.visible = false;
     cubeCam.position.copy(ball.pos);
     renderer.shadowMap.needsUpdate = false;   // shadows are rendered once per frame, not per cube face
@@ -1168,6 +1283,7 @@ function updateVisuals(dt) {
     elLives.textContent = '❤'.repeat(Math.max(0, state.lives));
     elProg.style.width = `${clamp(ball.s / track.finishS, 0, 1) * 100}%`;
     elTilt.style.left = `${50 + input.steer * 45}%`;
+    elSpeed.textContent = `${Math.round(ball.v * 3.6)} km/h`;
   }
 }
 
@@ -1186,7 +1302,9 @@ window.addEventListener('orientationchange', () => setTimeout(onResize, 200));
 let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const rawDt = (now - last) / 1000; last = now;
+  const dt = Math.min(0.05, rawDt);
+  if (rawDt < 0.5) trackFps(rawDt);
   readInput(dt);
   if (state.mode === 'count') updateCountdown(dt);
   if (state.mode === 'play' || state.mode === 'demo') {
@@ -1204,7 +1322,7 @@ startDemo();
 onResize();
 requestAnimationFrame(frame);
 window.__game = {
-  state, ball, get track() { return track; }, weather, input,
+  state, ball, get track() { return track; }, weather, input, camera,
   // headless test hook: advance the simulation without rendering
   sim(seconds, dt = 1 / 60) {
     for (let t = 0; t < seconds; t += dt) {
